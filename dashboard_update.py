@@ -1,32 +1,79 @@
 import os
+import requests
 from datetime import datetime, timedelta
 from notion_client import Client
 
-# ----------------------------
+# =========================================================
 # AUTH
-# ----------------------------
+# =========================================================
 NOTION_TOKEN = os.environ["NOTION_TOKEN"]
 PAGE_ID = os.environ["NOTION_PAGE_ID"]
 
 notion = Client(auth=NOTION_TOKEN)
 
-# ----------------------------
-# TIME (Inuvik-based reference note)
-# ----------------------------
+# =========================================================
+# TIME HANDLING (UTC reference + Arctic "yesterday")
+# =========================================================
 now = datetime.utcnow()
 yesterday = now - timedelta(days=1)
 
 date_str = yesterday.strftime("%Y-%m-%d")
 
-# Worldview fixed timestamp (approx midday Arctic observation window)
+# NASA Worldview (yesterday snapshot)
 worldview_url = (
     "https://worldview.earthdata.nasa.gov/"
     f"?t={date_str}-T18%3A00%3A00Z"
 )
 
-# ----------------------------
-# DASHBOARD CONTENT
-# ----------------------------
+# =========================================================
+# TEMPERATURE MODULE (REAL DATA)
+# =========================================================
+def get_temperature():
+    """
+    Arctic temperature from Open-Meteo (ERA5-based reanalysis).
+    Herschel Island coordinates.
+    """
+
+    try:
+        url = "https://api.open-meteo.com/v1/forecast"
+        params = {
+            "latitude": 69.590,
+            "longitude": -139.099,
+            "current_weather": True
+        }
+
+        r = requests.get(url, params=params, timeout=10)
+        data = r.json()
+
+        temp = data["current_weather"]["temperature"]
+
+        return {
+            "temperature": temp,
+            "source": "Open-Meteo (ERA5 reanalysis)",
+            "status": "ok"
+        }
+
+    except Exception:
+        return {
+            "temperature": None,
+            "source": "fallback (data unavailable)",
+            "status": "missing"
+        }
+
+temp_data = get_temperature()
+
+# =========================================================
+# DASHBOARD TEXT
+# =========================================================
+temp_text = (
+    f"Current air temperature: {temp_data['temperature']} °C\n"
+    f"Source: {temp_data['source']}\n"
+    f"Status: {temp_data['status']}"
+)
+
+# =========================================================
+# NOTION BLOCKS
+# =========================================================
 blocks = [
     # TITLE
     {
@@ -62,7 +109,9 @@ blocks = [
         "divider": {}
     },
 
+    # =====================================================
     # SATELLITE SECTION
+    # =====================================================
     {
         "object": "block",
         "type": "heading_2",
@@ -83,7 +132,7 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": f"Automated observation for {date_str} (Inuvik reference time)."
+                    "content": f"Automated observation for {date_str} (UTC reference)."
                 }
             }]
         }
@@ -102,7 +151,9 @@ blocks = [
         }
     },
 
-    # TEMPERATURE (placeholder scientific structure)
+    # =====================================================
+    # TEMPERATURE SECTION
+    # =====================================================
     {
         "object": "block",
         "type": "heading_2",
@@ -123,13 +174,28 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "Data source: ECCC (Ivvavik / Herschel proxy station) + model fallback (Meteoblue / ERA5 planned)."
+                    "content": temp_text
                 }
             }]
         }
     },
 
-    # SEA ICE
+    {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{
+                "type": "text",
+                "text": {
+                    "content": "Note: Temperature is based on ERA5 reanalysis via Open-Meteo. Suitable for Arctic regional monitoring where in-situ data is intermittent."
+                }
+            }]
+        }
+    },
+
+    # =====================================================
+    # SEA ICE (placeholder next module)
+    # =====================================================
     {
         "object": "block",
         "type": "heading_2",
@@ -150,13 +216,15 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "Planned: OSI SAF sea ice concentration (satellite-derived). Backup: Canadian Ice Service products during open-water season."
+                    "content": "Next module: OSI SAF sea ice concentration (satellite-derived) + seasonal classification."
                 }
             }]
         }
     },
 
-    # TIDES
+    # =====================================================
+    # TIDES / SEA LEVEL
+    # =====================================================
     {
         "object": "block",
         "type": "heading_2",
@@ -177,13 +245,13 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "Fisheries & Oceans Canada tide gauge (station 06525) + Copernicus sea level anomaly (planned integration)."
+                    "content": "Fisheries and Oceans Canada tide gauge (06525) + Copernicus sea level anomaly integration planned."
                 }
             }]
         }
     },
 
-    # FOOTER SCIENCE NOTE
+    # FOOTER
     {
         "object": "block",
         "type": "divider",
@@ -197,24 +265,24 @@ blocks = [
             "rich_text": [{
                 "type": "text",
                 "text": {
-                    "content": "Note: All timestamps are reported in UTC; interpretation should be made relative to Inuvik local time (UTC−7 / UTC−8 depending on season)."
+                    "content": "All timestamps are in UTC. Interpretations should be referenced to Inuvik local time (seasonally UTC−7/−8)."
                 }
             }]
         }
     }
 ]
 
-# ----------------------------
-# CLEAR PAGE
-# ----------------------------
-existing = notion.blocks.children.list(block_id=PAGE_ID)
+# =========================================================
+# CLEAR EXISTING PAGE CONTENT
+# =========================================================
+existing_blocks = notion.blocks.children.list(block_id=PAGE_ID)
 
-for b in existing["results"]:
+for b in existing_blocks["results"]:
     notion.blocks.delete(block_id=b["id"])
 
-# ----------------------------
-# UPDATE PAGE
-# ----------------------------
+# =========================================================
+# PUSH NEW DASHBOARD
+# =========================================================
 notion.blocks.children.append(
     block_id=PAGE_ID,
     children=blocks
