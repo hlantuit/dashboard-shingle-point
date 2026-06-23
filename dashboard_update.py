@@ -158,6 +158,47 @@ def link_paragraph(label, url):
     }
  
  
+def table_row(cell_lines_list):
+    """
+    Builds a single table_row block. cell_lines_list is a list of "lines"
+    specs (one per column, same format accepted by build_bolded_lines —
+    plain string, (label, value) tuple, or list of mixed segments), so
+    individual values within a cell can be bolded the same way as
+    elsewhere in this script.
+    """
+    return {
+        "object": "block",
+        "type": "table_row",
+        "table_row": {
+            "cells": [build_bolded_lines([cell]) for cell in cell_lines_list]
+        },
+    }
+ 
+ 
+def table(header_cells, rows, has_column_header=True):
+    """
+    Builds a table block with a fixed column count (table_width), which
+    per Notion's API can only be set at creation time. All rows — header
+    included — must be supplied as nested children in the same create
+    call; rows cannot be patched in afterward.
+ 
+    header_cells: list of plain strings/line-specs for the header row.
+    rows: list of cell_lines_list, one per data row (see table_row).
+    """
+    width = len(header_cells)
+    all_rows = [table_row(header_cells)] + [table_row(r) for r in rows]
+    return {
+        "object": "block",
+        "type": "table",
+        "table": {
+            "table_width": width,
+            "has_column_header": has_column_header,
+            "has_row_header": False,
+            "children": all_rows,
+        },
+    }
+ 
+ 
 def columns(*column_block_lists):
     """
     Builds a column_list block with N columns, each containing the given
@@ -481,23 +522,25 @@ def get_land_forecast(days=5):
 land_forecast_days = get_land_forecast()
  
 if land_forecast_days:
-    lines = []
+    forecast_table_rows = []
     for d in land_forecast_days:
         day_label = datetime.strptime(d["date"], "%Y-%m-%d").strftime("%a %b %d")
         compass = degrees_to_compass(d["wind_dir_deg"])
-        # Each day is ONE line containing multiple bold value segments
-        # mixed with plain connecting text (commas, "wind up to", etc).
-        lines.append([
-            f"{day_label}: ",
+        wind_label = f"{d['wind_max_kmh']:.0f} km/h {compass or ''}".strip()
+        forecast_table_rows.append([
+            day_label,
             ("", f"{d['temp_min']:.0f}–{d['temp_max']:.0f} °C"),
-            ", wind up to ",
-            ("", f"{d['wind_max_kmh']:.0f} km/h {compass or ''}".strip()),
-            ", precip ",
+            ("", wind_label),
             ("", f"{d['precip_mm']:.1f} mm"),
         ])
-    land_forecast_text = lines + ["Source: Open-Meteo"]
+    land_forecast_table_block = table(
+        header_cells=["Day", "Temp", "Wind", "Precip"],
+        rows=forecast_table_rows,
+    )
+    land_forecast_caption = "Source: Open-Meteo"
 else:
-    land_forecast_text = "Land forecast unavailable — fetch failed. Check Action logs."
+    land_forecast_table_block = None
+    land_forecast_caption = "Land forecast unavailable — fetch failed. Check Action logs."
  
  
 # =========================================================
@@ -1271,16 +1314,16 @@ blocks.append(columns(weather_column, sun_column))
  
 blocks.append(divider())
  
-# --- Row 2: land forecast + marine forecast, side by side ---
-land_column = [
-    heading("📅 Weather Forecast — next 5 days", level=3),
-    callout(land_forecast_text, emoji="📅", color="green_background"),
-]
-marine_column = [
-    heading("⚓ Marine Forecast — Yukon Coast", level=3),
-    callout(marine_text, emoji="⚓", color="purple_background"),
-]
-blocks.append(columns(land_column, marine_column))
+# --- Row 2: weather forecast table (full width) then marine forecast ---
+blocks.append(heading("📅 Weather Forecast — next 5 days", level=3))
+if land_forecast_table_block:
+    blocks.append(land_forecast_table_block)
+blocks.append(paragraph(land_forecast_caption))
+ 
+blocks.append(divider())
+ 
+blocks.append(heading("⚓ Marine Forecast — Yukon Coast", level=3))
+blocks.append(callout(marine_text, emoji="⚓", color="purple_background"))
  
 blocks.append(divider())
  
@@ -1342,4 +1385,3 @@ print("Dashboard updated successfully")
 #   netCDF4
 #   notion-client
 #   requests
- 
