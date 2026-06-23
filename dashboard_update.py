@@ -581,6 +581,10 @@ temp_chart_bytes, temp_chart_caption = build_temperature_chart()
 # =========================================================
 # MODULE 2 — SATELLITE: MODIS true color via GIBS WMS
 # =========================================================
+MODIS_WIDTH_PX = 1024
+MODIS_HEIGHT_PX = 768
+ 
+ 
 def build_gibs_url(date_str):
     bbox = BBOX_WMS
     params = {
@@ -591,8 +595,8 @@ def build_gibs_url(date_str):
         "STYLES": "",
         "FORMAT": "image/png",
         "TRANSPARENT": "false",
-        "WIDTH": "1024",
-        "HEIGHT": "768",
+        "WIDTH": str(MODIS_WIDTH_PX),
+        "HEIGHT": str(MODIS_HEIGHT_PX),
         "SRS": "EPSG:4326",
         "BBOX": bbox,
         "TIME": date_str,
@@ -623,7 +627,85 @@ def fetch_modis_image(max_days_back=5):
     return None, None
  
  
+def annotate_modis_image(png_bytes, label_lat=69.575, label_lon=-139.083, label_text="Herschel Island", scale_km=50):
+    """
+    Draws a label marker at the given coordinates and a scale bar on the
+    MODIS image. Pixel position is computed from the same bbox/width/height
+    used to request the image from GIBS (an equirectangular/EPSG:4326
+    projection, so lon maps linearly to x and lat maps linearly to y).
+ 
+    The scale bar uses the latitude-adjusted km-per-degree-longitude value
+    (1 degree of longitude is shorter in real km the further from the
+    equator you are), since this image is not an equal-distance projection.
+    This is a standard simple-map approximation, accurate along the
+    horizontal/east-west direction at this image's center latitude — not
+    survey-grade, but appropriate for a regional reference image like this.
+ 
+    Returns annotated PNG bytes, or the original bytes unchanged if
+    annotation fails for any reason (so a drawing bug never blocks the
+    underlying satellite image from being shown).
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io as _io
+        import math
+ 
+        img = Image.open(_io.BytesIO(png_bytes)).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        width_px, height_px = img.size
+ 
+        minlon, minlat, maxlon, maxlat = map(float, BBOX_WMS.split(","))
+ 
+        # --- Label marker ---
+        x_frac = (label_lon - minlon) / (maxlon - minlon)
+        y_frac = 1 - (label_lat - minlat) / (maxlat - minlat)  # y=0 is top=maxlat
+        x_px = x_frac * width_px
+        y_px = y_frac * height_px
+ 
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        except Exception:
+            font = ImageFont.load_default()
+ 
+        marker_radius = 6
+        draw.ellipse(
+            [x_px - marker_radius, y_px - marker_radius, x_px + marker_radius, y_px + marker_radius],
+            fill=(255, 60, 60), outline=(255, 255, 255), width=2,
+        )
+ 
+        text_x, text_y = x_px + 12, y_px - 10
+        for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            draw.text((text_x + dx, text_y + dy), label_text, font=font, fill=(0, 0, 0))
+        draw.text((text_x, text_y), label_text, font=font, fill=(255, 255, 255))
+ 
+        # --- Scale bar (bottom-left corner) ---
+        km_per_deg_lon = 111.32 * math.cos(math.radians(label_lat))
+        total_km = (maxlon - minlon) * km_per_deg_lon
+        px_per_km = width_px / total_km
+ 
+        bar_px = scale_km * px_per_km
+        margin = 30
+        bar_x0 = margin
+        bar_y0 = height_px - margin - 10
+        bar_x1 = bar_x0 + bar_px
+ 
+        draw.line([(bar_x0, bar_y0), (bar_x1, bar_y0)], fill=(255, 255, 255), width=4)
+        draw.line([(bar_x0, bar_y0 - 6), (bar_x0, bar_y0 + 6)], fill=(255, 255, 255), width=4)
+        draw.line([(bar_x1, bar_y0 - 6), (bar_x1, bar_y0 + 6)], fill=(255, 255, 255), width=4)
+        draw.text((bar_x0, bar_y0 + 8), f"{scale_km} km", font=font, fill=(255, 255, 255))
+ 
+        out_buf = _io.BytesIO()
+        img.save(out_buf, format="PNG")
+        return out_buf.getvalue()
+ 
+    except Exception as e:
+        print("MODIS ANNOTATION FAILED (showing unannotated image instead):", e)
+        return png_bytes
+ 
+ 
 modis_bytes, modis_date = fetch_modis_image()
+if modis_bytes:
+    modis_bytes = annotate_modis_image(modis_bytes)
  
  
 # =========================================================
@@ -817,4 +899,3 @@ print("Dashboard updated successfully")
 #   netCDF4
 #   notion-client
 #   requests
- 
