@@ -489,6 +489,41 @@ else:
 # not structured numeric fields, so we display the text as published
 # rather than trying to parse specific values out of free-form wording.
 # =========================================================
+def _strip_html_to_text(html_str):
+    """
+    Converts Environment Canada's HTML-formatted summary text into plain
+    text suitable for a Notion paragraph: <br/> tags become newlines, and
+    any other HTML tags are stripped using Python's built-in HTML parser
+    rather than naive string replacement (more robust to whatever markup
+    variations the feed actually contains).
+    """
+    if not html_str:
+        return ""
+ 
+    from html.parser import HTMLParser
+ 
+    class _TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+ 
+        def handle_data(self, data):
+            self.parts.append(data)
+ 
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() == "br":
+                self.parts.append("\n")
+ 
+    parser = _TextExtractor()
+    parser.feed(html_str)
+    text = "".join(parser.parts)
+ 
+    # Collapse repeated whitespace within lines, but preserve the
+    # intentional newlines from <br/> tags.
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)
+ 
+ 
 def get_marine_forecast():
     try:
         import xml.etree.ElementTree as ET
@@ -504,8 +539,8 @@ def get_marine_forecast():
         for entry in root.findall("atom:entry", ns):
             title_el = entry.find("atom:title", ns)
             summary_el = entry.find("atom:summary", ns)
-            title = title_el.text if title_el is not None else ""
-            summary = summary_el.text if summary_el is not None else ""
+            title = _strip_html_to_text(title_el.text) if title_el is not None else ""
+            summary = _strip_html_to_text(summary_el.text) if summary_el is not None else ""
             entries.append({"title": title, "summary": summary})
         return entries
     except Exception as e:
@@ -655,7 +690,7 @@ def build_sun_curve_chart():
         NOTION_HORIZON = "#D4A72C"
  
         plt.rcParams["font.family"] = "DejaVu Sans"
-        fig, ax = plt.subplots(figsize=(9, 3.6), dpi=150)
+        fig, ax = plt.subplots(figsize=(5.5, 3.2), dpi=150)
         fig.patch.set_alpha(0)
         ax.set_facecolor("none")
  
@@ -672,8 +707,8 @@ def build_sun_curve_chart():
         ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
  
         ax.set_xlim(0, 24)
-        ax.set_xticks(range(0, 25, 3))
-        ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 25, 3)], fontsize=10, color=NOTION_TEXT_GRAY)
+        ax.set_xticks(range(0, 25, 6))
+        ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 25, 6)], fontsize=9, color=NOTION_TEXT_GRAY)
         ax.tick_params(axis="y", labelsize=10, colors=NOTION_TEXT_GRAY, length=0)
         ax.tick_params(axis="x", length=0)
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
@@ -864,7 +899,7 @@ def build_gibs_url(date_str):
         "SERVICE": "WMS",
         "REQUEST": "GetMap",
         "VERSION": "1.1.1",
-        "LAYERS": "MODIS_Terra_CorrectedReflectance_TrueColor",
+        "LAYERS": "MODIS_Terra_CorrectedReflectance_TrueColor,Coastlines",
         "STYLES": "",
         "FORMAT": "image/png",
         "TRANSPARENT": "false",
@@ -923,8 +958,8 @@ def annotate_modis_image(png_bytes, points=None, scale_km=50):
     """
     if points is None:
         points = [
-            (69.575, -139.083, "Herschel Island"),
-            (68.989, -137.345, "Shingle Point"),
+            (69.568861, -138.911754, "Qikiqtaruk Herschel Island", -28),
+            (68.989, -137.345, "Shingle Point", -10),
         ]
  
     try:
@@ -944,7 +979,16 @@ def annotate_modis_image(png_bytes, points=None, scale_km=50):
             font = ImageFont.load_default()
  
         # --- Label markers ---
-        for lat, lon, label_text in points:
+        for point in points:
+            # Support both the old 3-tuple (lat, lon, label) and the new
+            # 4-tuple with an explicit vertical text offset, so existing
+            # callers don't break.
+            if len(point) == 4:
+                lat, lon, label_text, text_dy = point
+            else:
+                lat, lon, label_text = point
+                text_dy = -10
+ 
             x_frac = (lon - minlon) / (maxlon - minlon)
             y_frac = 1 - (lat - minlat) / (maxlat - minlat)  # y=0 is top=maxlat
             x_px = x_frac * width_px
@@ -956,7 +1000,7 @@ def annotate_modis_image(png_bytes, points=None, scale_km=50):
                 fill=(255, 60, 60), outline=(255, 255, 255), width=2,
             )
  
-            text_x, text_y = x_px + 12, y_px - 10
+            text_x, text_y = x_px + 12, y_px + text_dy
             for dx, dy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
                 draw.text((text_x + dx, text_y + dy), label_text, font=font, fill=(0, 0, 0))
             draw.text((text_x, text_y), label_text, font=font, fill=(255, 255, 255))
@@ -1143,15 +1187,11 @@ sun_column = [
     heading("☀️ Sunrise / Sunset", level=3),
     callout(sun_text, emoji="☀️", color="yellow_background"),
 ]
-blocks.append(columns(weather_column, sun_column))
- 
-blocks.append(divider())
- 
-# --- Sun position curve, full width since a chart needs more room than a column ---
-blocks.append(heading("📈 Sun Position — today's solar elevation"))
 if sun_chart_block:
-    blocks.append(sun_chart_block)
-blocks.append(paragraph(sun_chart_caption if sun_chart_bytes else "Sun position chart could not be generated — see Action logs."))
+    sun_column.append(sun_chart_block)
+sun_column.append(paragraph(sun_chart_caption if sun_chart_bytes else "Sun position chart could not be generated — see Action logs."))
+ 
+blocks.append(columns(weather_column, sun_column))
  
 blocks.append(divider())
  
@@ -1216,3 +1256,4 @@ print("Dashboard updated successfully")
 #   netCDF4
 #   notion-client
 #   requests
+ 
