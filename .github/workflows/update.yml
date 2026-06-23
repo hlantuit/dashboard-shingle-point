@@ -1,7 +1,10 @@
 name: Update Herschel Dashboard
 
 on:
-  workflow_dispatch:
+
+  workflow_dispatch:        # keep this if you already have it — lets you trigger manually
+  schedule:
+    - cron: '0 * * * *'     # runs at the top of every hour, UTC
 
 jobs:
   build:
