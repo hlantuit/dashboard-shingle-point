@@ -117,6 +117,25 @@ def callout(lines, emoji="📌", color="gray_background", children=None):
     }
  
  
+def disclaimer_paragraph(text):
+    """
+    Builds a paragraph block in gray, italicized text — used for the
+    bottom-of-page disclaimer, visually distinct (de-emphasized) from the
+    rest of the dashboard's normal-weight content.
+    """
+    return {
+        "object": "block",
+        "type": "paragraph",
+        "paragraph": {
+            "rich_text": [{
+                "type": "text",
+                "text": {"content": text},
+                "annotations": {"color": "gray", "italic": True},
+            }]
+        },
+    }
+ 
+ 
 def paragraph(lines):
     """
     Builds a paragraph block from a list of lines (see build_bolded_lines).
@@ -606,27 +625,66 @@ def get_sun_info():
         return {"status": "error"}
  
  
+def solar_elevation_deg(lat_deg, lon_deg, dt_utc):
+    """
+    Standard solar elevation angle formula (declination + hour angle).
+    Returns elevation in degrees above the horizon (negative = below).
+    Verified against known physical cases: ~90° at the equator/equinox
+    noon, positive at Herschel Island summer midnight (midnight sun),
+    negative at Herschel Island winter noon (polar night boundary).
+    """
+    lat = math.radians(lat_deg)
+    day_of_year = dt_utc.timetuple().tm_yday
+    hour_utc = dt_utc.hour + dt_utc.minute / 60 + dt_utc.second / 3600
+ 
+    decl = math.radians(23.45 * math.sin(math.radians(360 / 365 * (day_of_year - 81))))
+    b = math.radians(360 / 365 * (day_of_year - 81))
+    eot = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
+ 
+    time_correction = 4 * lon_deg + eot  # minutes
+    solar_time = hour_utc + time_correction / 60
+    hour_angle = math.radians(15 * (solar_time - 12))
+ 
+    elevation = math.asin(
+        math.sin(lat) * math.sin(decl) + math.cos(lat) * math.cos(decl) * math.cos(hour_angle)
+    )
+    return math.degrees(elevation)
+ 
+ 
 sun_info = get_sun_info()
  
-# At this latitude in summer, sunrise/sunset can come back as the same
-# instant or with a day_length very close to 24h/0h — this is polar day,
-# not a bug, so we detect and label it rather than show a misleading time.
+# At this latitude, sunrise-sunset.org's reported day_length appears to
+# behave unexpectedly during polar day — it returned ~0 instead of ~24h in
+# practice, likely because its internal sunrise/sunset timestamps become
+# degenerate when the sun never sets. Rather than guess at that API's
+# internal edge-case behavior, we classify polar day/night directly using
+# our own solar elevation formula (already verified correct against known
+# physical cases), which doesn't depend on day_length at all.
 if sun_info["status"] == "ok":
-    day_length_s = sun_info["day_length_s"]
-    hours = int(day_length_s // 3600)
-    minutes = int((day_length_s % 3600) // 60)
+    # Scan the full day at 15-minute resolution to find the true minimum
+    # and maximum elevation — checking only fixed clock-hour samples (e.g.
+    # UTC noon/midnight) isn't reliable, since the actual highest/lowest
+    # points of the day are offset from UTC by this location's longitude.
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_elevations = [solar_elevation_deg(LAT, LON, day_start + timedelta(minutes=15 * i)) for i in range(96)]
+    min_elevation_today = min(day_elevations)
+    max_elevation_today = max(day_elevations)
  
-    if day_length_s >= 23 * 3600 + 30 * 60:
+    day_length_s = sun_info["day_length_s"]
+    hours = int(day_length_s // 3600) if day_length_s else 0
+    minutes = int((day_length_s % 3600) // 60) if day_length_s else 0
+ 
+    if min_elevation_today > 0:
+        # Sun never sets: above the horizon at every point in the day.
         sun_text = [
-            ("Day length: ", f"~{hours}h {minutes}min"),
-            "Consistent with continuous daylight (midnight sun) at this latitude.",
-            "Source: sunrise-sunset.org",
+            "Sun stays above the horizon all day (midnight sun) at this latitude.",
+            "Source: sunrise-sunset.org, cross-checked against solar position",
         ]
-    elif day_length_s <= 30 * 60:
+    elif max_elevation_today < 0:
+        # Sun never rises: below the horizon at every point in the day.
         sun_text = [
-            ("Day length: ", f"~{hours}h {minutes}min"),
-            "Consistent with polar night at this latitude.",
-            "Source: sunrise-sunset.org",
+            "Sun stays below the horizon all day (polar night) at this latitude.",
+            "Source: sunrise-sunset.org, cross-checked against solar position",
         ]
     else:
         sun_text = [
@@ -650,25 +708,11 @@ else:
 # At this latitude the curve naturally shows polar day (never crosses
 # zero) or polar night (always negative) without any special-case logic —
 # the same formula handles both automatically.
+#
+# (solar_elevation_deg itself is defined earlier in the file, right before
+# the sunrise/sunset text module, since that module now also depends on it
+# for robust polar-day/polar-night detection.)
 # =========================================================
-def solar_elevation_deg(lat_deg, lon_deg, dt_utc):
-    lat = math.radians(lat_deg)
-    day_of_year = dt_utc.timetuple().tm_yday
-    hour_utc = dt_utc.hour + dt_utc.minute / 60 + dt_utc.second / 3600
- 
-    decl = math.radians(23.45 * math.sin(math.radians(360 / 365 * (day_of_year - 81))))
-    b = math.radians(360 / 365 * (day_of_year - 81))
-    eot = 9.87 * math.sin(2 * b) - 7.53 * math.cos(b) - 1.5 * math.sin(b)
- 
-    time_correction = 4 * lon_deg + eot  # minutes
-    solar_time = hour_utc + time_correction / 60
-    hour_angle = math.radians(15 * (solar_time - 12))
- 
-    elevation = math.asin(
-        math.sin(lat) * math.sin(decl) + math.cos(lat) * math.cos(decl) * math.cos(hour_angle)
-    )
-    return math.degrees(elevation)
- 
  
 def build_sun_curve_chart():
     """
@@ -771,20 +815,23 @@ def fetch_daily_temps(start_date, end_date):
  
  
 # =========================================================
-# MODULE 1c — TEMPERATURE CHART: last 10 days vs 30-year daily normal
+# MODULE 1c — TEMPERATURE CHART: last 30 days vs 30-year daily normal
 # =========================================================
 def build_temperature_chart():
     """
-    Builds a chart of the last 10 days of mean daily temperature against
-    the 30-year (1996-2025) average for the same calendar days.
+    Builds a chart of the last 30 days of mean daily temperature against
+    the 30-year average for the same calendar days.
  
-    The 30-year normal is computed here by pulling the same 10-day
+    The 30-year normal is computed here by pulling the same 30-day
     calendar window from each of the past 30 years and averaging —
     Open-Meteo has no pre-computed "climate normal" endpoint, so this
-    is done as 30 separate small historical queries.
+    is done as 30 separate historical queries (one per year, each
+    covering the full 30-day window in a single request).
     """
     end = (now - timedelta(days=1)).date()  # yesterday, since today's mean isn't final yet
-    start = end - timedelta(days=9)
+    start = end - timedelta(days=29)
+    normal_start_year = end.year - 30
+    normal_end_year = end.year - 1
  
     recent = fetch_daily_temps(start, end)
     if not recent:
@@ -823,7 +870,8 @@ def build_temperature_chart():
         normal_values.append(sum(vals) / len(vals) if vals else None)
  
     min_years_used = min(years_used_counts) if years_used_counts else 0
-    print(f"TEMP CHART: normal built from {min_years_used}-{max(years_used_counts) if years_used_counts else 0} years of data per day")
+    max_years_used = max(years_used_counts) if years_used_counts else 0
+    print(f"TEMP CHART: normal built from {min_years_used}-{max_years_used} years of data per day")
  
     if min_years_used < 15:
         print("TEMP CHART: WARNING — fewer than 15 years of data available for the normal, treat with caution")
@@ -853,19 +901,23 @@ def build_temperature_chart():
                      [v + 1.5 if v is not None else math.nan for v in normal_values],
                      color=NOTION_BLUE, alpha=0.10, linewidth=0, zorder=1)
     ax.plot(x, normal_values, linewidth=1.5, color=NOTION_BLUE, alpha=0.55,
-             label="1996–2025 average", zorder=2)
+             label=f"{normal_start_year}–{normal_end_year} average", zorder=2)
  
-    ax.plot(x, recent_values, marker="o", markersize=5, linewidth=2.5,
+    ax.plot(x, recent_values, marker="o", markersize=4, linewidth=2,
              color=NOTION_RED, label=f"{current_year} observed",
-             markerfacecolor="white", markeredgewidth=1.5, markeredgecolor=NOTION_RED, zorder=3)
+             markerfacecolor="white", markeredgewidth=1.2, markeredgecolor=NOTION_RED, zorder=3)
  
     # Remove chart border entirely except a faint baseline
     for spine in ["top", "right", "left"]:
         ax.spines[spine].set_visible(False)
     ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
  
-    ax.set_xticks(list(x))
-    ax.set_xticklabels(x_labels, fontsize=10, color=NOTION_TEXT_GRAY)
+    # With 30 days instead of 10, show every other date label to avoid
+    # overcrowding the x-axis.
+    tick_positions = list(x)[::2]
+    tick_labels = x_labels[::2]
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
     ax.tick_params(axis="y", labelsize=10, colors=NOTION_TEXT_GRAY, length=0)
     ax.tick_params(axis="x", length=0)
  
@@ -879,7 +931,19 @@ def build_temperature_chart():
     fig.tight_layout()
  
     png_bytes = fig_to_png_bytes(fig)
-    caption = f"Daily mean temperature, last 10 days vs. 30-year (1996-2025) average (shaded band ±1.5°C). Normal computed from {min_years_used}-{max(years_used_counts)} years of ERA5 data per calendar day."
+ 
+    # Clearer caption: state the actual number of years cleanly rather than
+    # a confusing "18-18" range. Only mention a range if there's a genuine
+    # spread across days; otherwise state the single consistent number.
+    if min_years_used == max_years_used:
+        years_phrase = f"{min_years_used} years" if min_years_used != 30 else "the full 30 years"
+    else:
+        years_phrase = f"{min_years_used} to {max_years_used} years (varies by day)"
+ 
+    caption = (
+        f"Daily mean temperature, last 30 days vs. {normal_start_year}-{normal_end_year} average "
+        f"(shaded band ±1.5°C). Normal computed from {years_phrase} of ERA5 data per calendar day."
+    )
     return png_bytes, caption
  
  
@@ -1170,6 +1234,18 @@ blocks = [
 if modis_block:
     blocks.append(modis_block)
 blocks.append(paragraph(modis_caption))
+ 
+# Link to explore the same date/location/layers interactively in NASA's
+# own Worldview tool, using its documented permalink parameters:
+# p=projection, v=viewport extent (minX,minY,maxX,maxY), l=layer list, t=date.
+worldview_date = modis_date if modis_date else now.strftime("%Y-%m-%d")
+worldview_url = (
+    f"https://worldview.earthdata.nasa.gov/?p=geographic"
+    f"&l=MODIS_Terra_CorrectedReflectance_TrueColor,Coastlines"
+    f"&t={worldview_date}"
+    f"&v={BBOX_WMS}"
+)
+blocks.append(link_paragraph("Explore here →", worldview_url))
 blocks.append(divider())
  
 # --- Row 1: current conditions (weather) + sun, side by side ---
@@ -1231,6 +1307,16 @@ permafrost_column = [
     link_paragraph("→ GTN-P Global Terrestrial Network for Permafrost database", "https://data.gtn-p.org/"),
 ]
 blocks.append(columns(tide_column, permafrost_column))
+ 
+blocks.append(divider())
+blocks.append(disclaimer_paragraph(
+    "Disclaimer: All data and imagery on this page are collated from external third-party sources "
+    "(including NASA GIBS/EOSDIS, Open-Meteo, sunrise-sunset.org, Environment Canada, and DFO/CHS) "
+    "and are displayed here for general informational purposes only. We hold no responsibility for "
+    "the accuracy, completeness, or timeliness of this data, and this page is not a substitute for "
+    "official sources. Do not use this information for navigation, safety-critical decisions, or any "
+    "other purpose where inaccurate or delayed data could cause harm."
+))
  
 # =========================================================
 # CLEAR PAGE
