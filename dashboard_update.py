@@ -1870,11 +1870,162 @@ def annotate_modis_image(png_bytes, points=None, scale_km=50):
         return png_bytes
  
  
+def annotate_plain_image(png_bytes, points=None, scale_km=50, half_width_m=150_000):
+    """
+    Draws label markers and a scale bar on an already north-up,
+    non-rotated image (e.g. Sentinel-1, which Sentinel Hub reprojects
+    server-side and returns already correctly oriented) — unlike
+    annotate_modis_image, which additionally rotates each point's offset
+    to match MODIS's own rotate-then-crop workflow. Applying that
+    MODIS-specific rotation to an image that was never actually rotated
+    was the cause of a real bug: points far from center (e.g. Shingle
+    Point) ended up badly displaced, while points near center (Herschel
+    Island, since the frame is centered on it) only had a small, easy-to-
+    miss error.
+ 
+    points: list of (lat, lon, label) or (lat, lon, label, text_dy_offset)
+    tuples. Defaults to Herschel Island and Shingle Point if not given.
+ 
+    Returns annotated PNG bytes, or the original bytes unchanged if
+    annotation fails for any reason.
+    """
+    if points is None:
+        points = [
+            (69.568861, -138.911754, "Qikiqtaruk Herschel Island", -28),
+            (68.989, -137.345, "Shingle Point", -10),
+        ]
+ 
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io as _io
+ 
+        img = Image.open(_io.BytesIO(png_bytes)).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        width_px, height_px = img.size
+ 
+        meters_per_px = (half_width_m * 2) / width_px
+ 
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+        except Exception:
+            font = ImageFont.load_default()
+ 
+        def project_point(lat, lon):
+            x_m, y_m = latlon_to_3413(lat, lon)
+            dx_m = x_m - _HERSCHEL_X
+            dy_m = y_m - _HERSCHEL_Y
+            # NO rotation applied here — the image is already north-up.
+            x_px = width_px / 2 + dx_m / meters_per_px
+            y_px = height_px / 2 - dy_m / meters_per_px
+            return x_px, y_px
+ 
+        for point in points:
+            if len(point) == 4:
+                lat, lon, label_text, text_dy = point
+            else:
+                lat, lon, label_text = point
+                text_dy = -10
+ 
+            x_px, y_px = project_point(lat, lon)
+ 
+            marker_radius = 6
+            draw.ellipse(
+                [x_px - marker_radius, y_px - marker_radius, x_px + marker_radius, y_px + marker_radius],
+                fill=(255, 60, 60), outline=(255, 255, 255), width=2,
+            )
+ 
+            text_x, text_y = x_px + 12, y_px + text_dy
+            for tdx, tdy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
+                draw.text((text_x + tdx, text_y + tdy), label_text, font=font, fill=(0, 0, 0))
+            draw.text((text_x, text_y), label_text, font=font, fill=(255, 255, 255))
+ 
+        # --- Yukon/Alaska international border (141st meridian) ---
+        border_lon = -141.0
+        p1 = project_point(60.0, border_lon)
+        p2 = project_point(69.65, border_lon)
+ 
+        num_dashes = 120
+        for i in range(num_dashes):
+            if i % 2 != 0:
+                continue
+            t0, t1 = i / num_dashes, (i + 1) / num_dashes
+            seg_p1 = (p1[0] + (p2[0] - p1[0]) * t0, p1[1] + (p2[1] - p1[1]) * t0)
+            seg_p2 = (p1[0] + (p2[0] - p1[0]) * t1, p1[1] + (p2[1] - p1[1]) * t1)
+            draw.line([seg_p1, seg_p2], fill=(255, 255, 255), width=2)
+ 
+        # --- Scale bar (bottom-left corner) ---
+        px_per_km = 1000 / meters_per_px
+        bar_px = scale_km * px_per_km
+        margin = 30
+        bar_x0 = margin
+        bar_y0 = height_px - margin - 10
+        bar_x1 = bar_x0 + bar_px
+ 
+        draw.line([(bar_x0, bar_y0), (bar_x1, bar_y0)], fill=(255, 255, 255), width=4)
+        draw.line([(bar_x0, bar_y0 - 6), (bar_x0, bar_y0 + 6)], fill=(255, 255, 255), width=4)
+        draw.line([(bar_x1, bar_y0 - 6), (bar_x1, bar_y0 + 6)], fill=(255, 255, 255), width=4)
+        draw.text((bar_x0, bar_y0 + 8), f"{scale_km} km", font=font, fill=(255, 255, 255))
+ 
+        out_buf = _io.BytesIO()
+        img.save(out_buf, format="PNG")
+        return out_buf.getvalue()
+ 
+    except Exception as e:
+        print("PLAIN IMAGE ANNOTATION FAILED (showing unannotated image instead):", e)
+        return png_bytes
+ 
+ 
+def stamp_timestamp(png_bytes, dt_inuvik, label="Acquired"):
+    """
+    Draws a timestamp in the upper-right corner of a satellite image, in
+    Inuvik local time, so it's visually obvious the image is not
+    real-time. Returns the stamped PNG bytes, or the original bytes
+    unchanged if stamping fails for any reason.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import io as _io
+ 
+        img = Image.open(_io.BytesIO(png_bytes)).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        width_px, height_px = img.size
+ 
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+        except Exception:
+            font = ImageFont.load_default()
+ 
+        text = f"{label}: {dt_inuvik.strftime('%Y-%m-%d %H:%M %Z')}"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        margin = 18
+        text_x = width_px - text_w - margin
+        text_y = margin
+ 
+        for tdx, tdy in [(-1, -1), (1, -1), (-1, 1), (1, 1)]:
+            draw.text((text_x + tdx, text_y + tdy), text, font=font, fill=(0, 0, 0))
+        draw.text((text_x, text_y), text, font=font, fill=(255, 255, 255))
+ 
+        out_buf = _io.BytesIO()
+        img.save(out_buf, format="PNG")
+        return out_buf.getvalue()
+ 
+    except Exception as e:
+        print("TIMESTAMP STAMP FAILED (showing unstamped image instead):", e)
+        return png_bytes
+ 
+ 
 modis_bytes, modis_date = fetch_modis_image()
 if modis_bytes:
     modis_bytes = rotate_to_north_up(modis_bytes)
 if modis_bytes:
     modis_bytes = annotate_modis_image(modis_bytes)
+if modis_bytes and modis_date:
+    try:
+        modis_dt_utc = datetime.strptime(modis_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        modis_bytes = stamp_timestamp(modis_bytes, to_inuvik_time(modis_dt_utc.replace(tzinfo=None)), label="Acquired")
+    except Exception as e:
+        print("MODIS TIMESTAMP STAMP FAILED:", e)
  
  
 # =========================================================
@@ -2108,13 +2259,28 @@ def fetch_copernicus_water_level():
         # actually has valid data, rather than trusting the nearest
         # match blindly.
         search_radius_m = 15_000  # ~5 grid cells in each direction
-        nearby = ds["zos"].sel(
-            x=slice(target_x - search_radius_m, target_x + search_radius_m),
-            y=slice(target_y - search_radius_m, target_y + search_radius_m),
+        x_coords = ds["x"].values
+        y_coords = ds["y"].values
+        x_ascending = x_coords[0] < x_coords[-1] if len(x_coords) > 1 else True
+        y_ascending = y_coords[0] < y_coords[-1] if len(y_coords) > 1 else True
+ 
+        # xarray's .sel(slice(...)) requires the slice bounds in the SAME
+        # order as the underlying coordinate array — slice(low, high) on
+        # a descending coordinate silently returns an empty selection,
+        # which was the actual cause of "no grid cells found" here.
+        x_slice = (
+            slice(target_x - search_radius_m, target_x + search_radius_m) if x_ascending
+            else slice(target_x + search_radius_m, target_x - search_radius_m)
+        )
+        y_slice = (
+            slice(target_y - search_radius_m, target_y + search_radius_m) if y_ascending
+            else slice(target_y + search_radius_m, target_y - search_radius_m)
         )
  
+        nearby = ds["zos"].sel(x=x_slice, y=y_slice)
+ 
         start = now
-        end = now + timedelta(hours=24)
+        end = now + timedelta(days=7)  # TOPAZ6 is a 10-day forecast product; 7 days gives a solid outlook with margin
         nearby = nearby.sel(time=slice(start, end))
  
         if nearby.size == 0:
@@ -2216,10 +2382,10 @@ def build_water_level_chart(times, values):
         ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
  
         ax.set_xlim(0, max(hours))
-        tick_hours = list(range(0, int(max(hours)) + 1, 6))
-        tick_labels = [(t0 + timedelta(hours=h)).replace(tzinfo=timezone.utc).astimezone(INUVIK_TZ).strftime("%H:%M") for h in tick_hours]
+        tick_hours = list(range(0, int(max(hours)) + 1, 24))
+        tick_labels = [(t0 + timedelta(hours=h)).replace(tzinfo=timezone.utc).astimezone(INUVIK_TZ).strftime("%b %d") for h in tick_hours]
         ax.set_xticks(tick_hours)
-        ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY)
+        ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
         ax.tick_params(axis="y", labelsize=9, colors=NOTION_TEXT_GRAY, length=0)
         ax.tick_params(axis="x", length=0)
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
@@ -2229,7 +2395,9 @@ def build_water_level_chart(times, values):
  
         fig.tight_layout()
         png_bytes = fig_to_png_bytes(fig)
-        caption = f"Total water level (tide + storm surge), next 24h, starting {(t0.replace(tzinfo=timezone.utc).astimezone(INUVIK_TZ)).strftime('%H:%M %Z')}. Source: Copernicus Marine."
+        forecast_days = round(max(hours) / 24)
+        start_label = (t0.replace(tzinfo=timezone.utc).astimezone(INUVIK_TZ)).strftime('%b %d, %H:%M %Z')
+        caption = f"Total water level (tide + storm surge), {forecast_days}-day forecast, starting {start_label}. Source: TOPAZ6 (Copernicus Marine)."
         return png_bytes, caption
  
     except Exception as e:
@@ -2408,16 +2576,33 @@ def get_sentinel_hub_token():
  
 def find_latest_sentinel1_date(token, lookback_days=10):
     """
-    Searches the Catalog API for the most recent Sentinel-1 GRD scene
-    covering Herschel Island within the lookback window. Returns a date
-    string (YYYY-MM-DD) or None if nothing was found / the search failed.
+    Searches the Catalog API for the most recent Sentinel-1 GRD scene that
+    actually covers Herschel Island (not just anywhere in a broad search
+    area) within the lookback window. Returns a date string (YYYY-MM-DD)
+    or None if nothing was found / the search failed.
+ 
+    Two layers of filtering: the search bbox itself is tight (matching
+    our actual ~150km display half-width, not an arbitrarily larger
+    area), and each candidate result's own bbox is additionally checked
+    to confirm it genuinely contains Herschel Island's coordinates with a
+    safety margin — since a scene can overlap a search box at a corner
+    without actually covering the specific point we care about.
     """
     try:
         url = "https://sh.dataspace.copernicus.eu/api/v1/catalog/1.0.0/search"
         date_to = now
         date_from = now - timedelta(days=lookback_days)
+ 
+        # Tight search box matching our actual display extent (~150km
+        # half-width), converted from EPSG:3413 meters to an approximate
+        # WGS84 lat/lon box for the Catalog API.
+        half_width_km = 150
+        lat_buffer = half_width_km / 111
+        lon_buffer = half_width_km / (111 * math.cos(math.radians(LAT)))
+        search_bbox = [LON - lon_buffer, LAT - lat_buffer, LON + lon_buffer, LAT + lat_buffer]
+ 
         body = {
-            "bbox": [LON - 1.5, LAT - 1.0, LON + 1.5, LAT + 1.0],
+            "bbox": search_bbox,
             "datetime": f"{date_from.strftime('%Y-%m-%dT%H:%M:%SZ')}/{date_to.strftime('%Y-%m-%dT%H:%M:%SZ')}",
             "collections": ["sentinel-1-grd"],
             "limit": 20,
@@ -2432,17 +2617,35 @@ def find_latest_sentinel1_date(token, lookback_days=10):
         features = resp.json().get("features", [])
         if not features:
             print("SENTINEL-1: no scenes found in catalog search window")
-            return None
+            return None, None
  
-        # Sort by acquisition datetime, take the most recent
-        features.sort(key=lambda f: f["properties"]["datetime"], reverse=True)
-        latest_datetime = features[0]["properties"]["datetime"]
-        print(f"SENTINEL-1: latest scene found: {latest_datetime}")
-        return latest_datetime[:10]  # YYYY-MM-DD
+        # Require each candidate's own bbox to genuinely contain Herschel
+        # Island with a small margin (~10km), not just overlap our search
+        # box at a corner.
+        margin_deg_lat = 10 / 111
+        margin_deg_lon = 10 / (111 * math.cos(math.radians(LAT)))
+        covering_features = []
+        for f in features:
+            fbbox = f.get("bbox")
+            if not fbbox or len(fbbox) < 4:
+                continue
+            fminx, fminy, fmaxx, fmaxy = fbbox[0], fbbox[1], fbbox[2], fbbox[3]
+            if (fminx + margin_deg_lon <= LON <= fmaxx - margin_deg_lon and
+                    fminy + margin_deg_lat <= LAT <= fmaxy - margin_deg_lat):
+                covering_features.append(f)
+ 
+        if not covering_features:
+            print("SENTINEL-1: scenes found nearby, but none actually cover Herschel Island with margin")
+            return None, None
+ 
+        covering_features.sort(key=lambda f: f["properties"]["datetime"], reverse=True)
+        latest_datetime = covering_features[0]["properties"]["datetime"]
+        print(f"SENTINEL-1: latest scene covering Herschel Island: {latest_datetime}")
+        return latest_datetime[:10], latest_datetime  # (YYYY-MM-DD for the request, full datetime for display)
  
     except Exception as e:
         print("SENTINEL-1 CATALOG SEARCH FAILED:", e)
-        return None
+        return None, None
  
  
 def fetch_sentinel1_image(token, date_str):
@@ -2464,7 +2667,17 @@ def fetch_sentinel1_image(token, date_str):
     Returns PNG bytes, or None on failure.
     """
     try:
-        minx, miny, maxx, maxy = map(float, BBOX_3413.split(","))
+        # Plain extent matching MODIS's actual FINAL display area
+        # (±150km around Herschel Island) — NOT the oversized BBOX_3413
+        # used for MODIS's own fetch-then-rotate workflow. Sentinel Hub
+        # reprojects server-side and returns an already north-up image at
+        # exactly the requested bbox, so no oversized padding is needed
+        # here the way MODIS needs it for its rotation step.
+        plain_half_width_m = 150_000
+        minx = _HERSCHEL_X - plain_half_width_m
+        maxx = _HERSCHEL_X + plain_half_width_m
+        miny = _HERSCHEL_Y - plain_half_width_m
+        maxy = _HERSCHEL_Y + plain_half_width_m
  
         # dB range -25 to 0 mapped to 0-255 grayscale, a typical display
         # stretch for VV gamma0 (matches the documented layer's general
@@ -2544,11 +2757,11 @@ sentinel1_caption = "Sentinel-1 SAR image unavailable — credentials missing or
  
 sh_token = get_sentinel_hub_token()
 if sh_token:
-    s1_date = find_latest_sentinel1_date(sh_token)
+    s1_date, s1_full_datetime = find_latest_sentinel1_date(sh_token)
     if s1_date:
         s1_raw = fetch_sentinel1_image(sh_token, s1_date)
         if s1_raw:
-            # Composite onto an opaque background first (annotate_modis_image
+            # Composite onto an opaque background first (annotate_plain_image
             # expects RGB, not RGBA) so the transparent/uncovered areas
             # render as a neutral gray rather than failing on mode mismatch.
             from PIL import Image
@@ -2558,7 +2771,17 @@ if sh_token:
             composited = Image.alpha_composite(background, rgba_img).convert("RGB")
             buf = _io.BytesIO()
             composited.save(buf, format="PNG")
-            sentinel1_bytes = annotate_modis_image(buf.getvalue())
+            # Uses annotate_plain_image (NOT annotate_modis_image), since
+            # this image is already correctly north-up from Sentinel Hub's
+            # server-side reprojection — applying MODIS's rotation logic
+            # here was the cause of a real bug (points far from center,
+            # like Shingle Point, ending up badly displaced).
+            sentinel1_bytes = annotate_plain_image(buf.getvalue())
+            try:
+                s1_dt_utc = datetime.strptime(s1_full_datetime[:19], "%Y-%m-%dT%H:%M:%S")
+                sentinel1_bytes = stamp_timestamp(sentinel1_bytes, to_inuvik_time(s1_dt_utc), label="Acquired")
+            except Exception as e:
+                print("SENTINEL-1 TIMESTAMP STAMP FAILED:", e)
             sentinel1_caption = (
                 f"Sentinel-1 SAR, VV decibel gamma0 (orthorectified), {s1_date}. "
                 f"Dark gray areas are outside that day's satellite swath coverage. "
@@ -2702,4 +2925,3 @@ else:
 #   netCDF4
 #   notion-client
 #   requests
- 
