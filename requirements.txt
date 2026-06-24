@@ -1,7 +1,6 @@
 notion-client
 requests
 matplotlib
-xarray
-netCDF4
 Pillow
-copernicusmarine
+xarray
+ 
