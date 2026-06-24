@@ -369,76 +369,141 @@ else:
 # 51-57: drizzle, 61-67: rain, 71-77: snow, 80-82: showers,
 # 85-86: snow showers, 95-99: thunderstorm
 # =========================================================
-NOTION_ICON_OUTLINE = (55, 53, 47)      # Notion's default ink color — used as a consistent outline on every icon
-NOTION_ICON_SUN = (243, 168, 49)        # more saturated than before, pops against pale backgrounds
-NOTION_ICON_CLOUD_WHITE = (255, 255, 255)
-NOTION_ICON_CLOUD_DARK = (180, 180, 178)
-NOTION_ICON_RAIN_BLUE = (33, 110, 217)  # more saturated blue, reads clearly on any background
-NOTION_ICON_FOG_GRAY = (130, 129, 126)
+from PIL import Image, ImageDraw
+
+NOTION_ICON_SIZE = 100
 
 
-def _icon_draw_sun(draw, cx, cy, r=18, color=None):
-    color = color or NOTION_ICON_SUN
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color, outline=NOTION_ICON_OUTLINE, width=2)
-    for i in range(8):
-        angle = i * math.pi / 4
-        x1 = cx + math.cos(angle) * (r + 5)
-        y1 = cy + math.sin(angle) * (r + 5)
-        x2 = cx + math.cos(angle) * (r + 13)
-        y2 = cy + math.sin(angle) * (r + 13)
-        draw.line([(x1, y1), (x2, y2)], fill=NOTION_ICON_OUTLINE, width=3)
+def _icon_new_canvas():
+    return Image.new("RGBA", (NOTION_ICON_SIZE, NOTION_ICON_SIZE), (0, 0, 0, 0))
 
 
-def _icon_draw_cloud(draw, cx, cy, scale=1.0, color=None):
+def _icon_cloud_bumps(r):
+    return [(-1.4, 0.1, 0.8), (-0.5, -0.5, 1.0), (0.5, -0.45, 1.05),
+            (1.4, 0.1, 0.75), (-0.9, 0.3, 0.85), (0.9, 0.3, 0.85)]
+
+
+def _icon_cloud_with_shadow(cx, cy, r, fill, highlight=None):
     """
-    Draws a cloud with a consistent dark outline regardless of fill color,
-    by drawing each lobe slightly oversized in the outline color first,
-    then the actual fill on top at the true size — a simple stroke effect
-    that keeps the cloud legible against any background.
+    Builds a cloud shape with a soft drop shadow and a subtle highlight on
+    the upper lobes, for a gentler, more dimensional look than a flat
+    single-color fill.
     """
-    color = color or NOTION_ICON_CLOUD_WHITE
-    r = 16 * scale
-    bumps = [(-1.5, 0.1, 0.85), (-0.6, -0.5, 1.0), (0.4, -0.4, 1.05),
-             (1.3, 0.1, 0.8), (-0.9, 0.35, 0.9), (0.9, 0.35, 0.9)]
-    for dx, dy, s in bumps:
-        rr = r * s + 2
-        draw.ellipse([cx + dx * r - rr, cy + dy * r - rr, cx + dx * r + rr, cy + dy * r + rr], fill=NOTION_ICON_OUTLINE)
+    from PIL import ImageFilter
+
+    img = _icon_new_canvas()
+    bumps = _icon_cloud_bumps(r)
+
+    shadow = _icon_new_canvas()
+    sd = ImageDraw.Draw(shadow)
     for dx, dy, s in bumps:
         rr = r * s
-        draw.ellipse([cx + dx * r - rr, cy + dy * r - rr, cx + dx * r + rr, cy + dy * r + rr], fill=color)
+        sd.ellipse([cx + dx * r - rr, cy + dy * r - rr + 4, cx + dx * r + rr, cy + dy * r + rr + 4], fill=(0, 0, 0, 55))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(4))
+    img = Image.alpha_composite(img, shadow)
+
+    draw = ImageDraw.Draw(img)
+    for dx, dy, s in bumps:
+        rr = r * s
+        draw.ellipse([cx + dx * r - rr, cy + dy * r - rr, cx + dx * r + rr, cy + dy * r + rr], fill=fill)
+    if highlight:
+        for dx, dy, s in [(-0.5, -0.5, 1.0), (0.5, -0.45, 1.05)]:
+            rr = r * s * 0.55
+            draw.ellipse([cx + dx * r - rr, cy + dy * r - rr - 3, cx + dx * r + rr, cy + dy * r + rr - 3], fill=highlight)
+
+    return img
 
 
-def _icon_partly_cloudy(draw, cx, cy):
-    _icon_draw_sun(draw, cx - 10, cy - 10, r=13)
-    _icon_draw_cloud(draw, cx + 8, cy + 6, scale=0.85)
+def _icon_sun(cx=None, cy=None, r=30):
+    """Layered gradient sun (three concentric circles, light to dark) with rays."""
+    img = _icon_new_canvas()
+    if cx is None:
+        cx, cy = NOTION_ICON_SIZE // 2, NOTION_ICON_SIZE // 2
+    draw = ImageDraw.Draw(img)
+
+    for i in range(12):
+        angle = i * math.pi / 6
+        x1 = cx + math.cos(angle) * (r + 8)
+        y1 = cy + math.sin(angle) * (r + 8)
+        x2 = cx + math.cos(angle) * (r + 18)
+        y2 = cy + math.sin(angle) * (r + 18)
+        draw.line([(x1, y1), (x2, y2)], fill=(255, 200, 60, 255), width=5)
+
+    for rad, color in [(r, (255, 196, 61, 255)), (r - 6, (255, 179, 46, 255)), (r - 14, (255, 213, 107, 255))]:
+        draw.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], fill=color)
+
+    return img
 
 
-def _icon_rain(draw, cx, cy, heavy=False):
-    _icon_draw_cloud(draw, cx, cy, color=NOTION_ICON_CLOUD_DARK if heavy else NOTION_ICON_CLOUD_WHITE)
-    offsets = [-18, -6, 6, 18] if heavy else [-14, 0, 14]
+def _icon_cloud(cx=None, cy=None, r=27, dark=False):
+    if cx is None:
+        cx, cy = NOTION_ICON_SIZE // 2, NOTION_ICON_SIZE // 2 + 5
+    fill = (158, 165, 175, 255) if dark else (255, 255, 255, 255)
+    highlight = (190, 196, 204, 255) if dark else (245, 248, 250, 255)
+    return _icon_cloud_with_shadow(cx, cy, r, fill, highlight)
+
+
+def _icon_partly_cloudy():
+    sun = _icon_sun(cx=NOTION_ICON_SIZE // 2 - 14, cy=NOTION_ICON_SIZE // 2 - 14, r=24)
+    cloud = _icon_cloud(cx=NOTION_ICON_SIZE // 2 + 12, cy=NOTION_ICON_SIZE // 2 + 14, r=26)
+    return Image.alpha_composite(sun, cloud)
+
+
+def _icon_rain(heavy=False):
+    cx, cy = NOTION_ICON_SIZE // 2, NOTION_ICON_SIZE // 2 - 3
+    r = 27
+    fill = (158, 165, 175, 255) if heavy else (200, 206, 213, 255)
+    highlight = (180, 186, 194, 255) if heavy else (225, 229, 233, 255)
+    img = _icon_cloud_with_shadow(cx, cy, r, fill, highlight)
+    draw = ImageDraw.Draw(img)
+    offsets = [-22, -7, 7, 22] if heavy else [-16, 0, 16]
     for dx in offsets:
-        draw.line([(cx + dx, cy + 22), (cx + dx - 4, cy + 36)], fill=NOTION_ICON_RAIN_BLUE, width=4)
+        x0, y0 = cx + dx, cy + 24
+        x1, y1 = cx + dx - 5, cy + 40
+        draw.line([(x0, y0), (x1, y1)], fill=(64, 131, 217, 120), width=9)  # soft glow halo
+        draw.line([(x0, y0), (x1, y1)], fill=(64, 131, 217, 255), width=5)
+    return img
 
 
-def _icon_snow(draw, cx, cy):
-    _icon_draw_cloud(draw, cx, cy, color=NOTION_ICON_CLOUD_WHITE)
-    for dx in [-14, 0, 14]:
-        for dy in [26, 38]:
-            r = 3
-            draw.ellipse([cx + dx - r, cy + dy - r, cx + dx + r, cy + dy + r],
-                         fill=NOTION_ICON_CLOUD_WHITE, outline=NOTION_ICON_OUTLINE, width=1)
+def _icon_snow():
+    cx, cy = NOTION_ICON_SIZE // 2, NOTION_ICON_SIZE // 2 - 3
+    r = 27
+    img = _icon_cloud_with_shadow(cx, cy, r, (255, 255, 255, 255), (245, 248, 250, 255))
+    draw = ImageDraw.Draw(img)
+    for dx in [-16, 0, 16]:
+        for dy in [28, 42]:
+            cx2, cy2 = cx + dx, cy + dy
+            rad = 5
+            for i in range(3):
+                angle = i * math.pi / 3
+                x1 = cx2 + math.cos(angle) * rad
+                y1 = cy2 + math.sin(angle) * rad
+                x2 = cx2 - math.cos(angle) * rad
+                y2 = cy2 - math.sin(angle) * rad
+                draw.line([(x1, y1), (x2, y2)], fill=(170, 195, 220, 255), width=2)
+    return img
 
 
-def _icon_fog(draw, cx, cy):
-    for i, dy in enumerate([-10, 2, 14, 26]):
-        w = 28 - i * 1.5
-        draw.line([(cx - w, cy + dy), (cx + w, cy + dy)], fill=NOTION_ICON_FOG_GRAY, width=4)
+def _icon_fog():
+    img = _icon_new_canvas()
+    draw = ImageDraw.Draw(img)
+    cx, cy = NOTION_ICON_SIZE // 2, NOTION_ICON_SIZE // 2
+    for i, dy in enumerate([-22, -6, 10, 26]):
+        w = 36 - i * 2
+        alpha = 255 - i * 15
+        draw.line([(cx - w, cy + dy), (cx + w, cy + dy)], fill=(150, 165, 180, alpha), width=7)
+    return img
 
 
-def _icon_thunder(draw, cx, cy):
-    _icon_draw_cloud(draw, cx, cy, color=NOTION_ICON_CLOUD_DARK)
-    pts = [(cx - 4, cy + 18), (cx + 6, cy + 18), (cx - 2, cy + 34), (cx + 8, cy + 34), (cx - 6, cy + 50)]
-    draw.line(pts, fill=NOTION_ICON_SUN, width=4, joint="curve")
+def _icon_thunder():
+    cx, cy = NOTION_ICON_SIZE // 2, NOTION_ICON_SIZE // 2 - 8
+    r = 28
+    img = _icon_cloud_with_shadow(cx, cy, r, (148, 158, 170, 255), (172, 181, 192, 255))
+    draw = ImageDraw.Draw(img)
+    pts = [(cx - 6, cy + 20), (cx + 8, cy + 20), (cx - 3, cy + 38), (cx + 10, cy + 38), (cx - 8, cy + 58)]
+    draw.line(pts, fill=(255, 200, 40, 90), width=12, joint="curve")  # glow
+    draw.line(pts, fill=(255, 196, 40, 255), width=6, joint="curve")
+    return img
 
 
 def render_weather_icon(weathercode):
@@ -451,37 +516,32 @@ def render_weather_icon(weathercode):
         from PIL import Image, ImageDraw
         import io as _io
 
-        size = 100
-        img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
-        draw = ImageDraw.Draw(img)
-        cx, cy = size // 2, size // 2 - 5
-
         code = weathercode if weathercode is not None else -1
 
         if code in (0, 1):
-            _icon_draw_sun(draw, cx, cy)
+            img = _icon_sun()
         elif code == 2:
-            _icon_partly_cloudy(draw, cx, cy)
+            img = _icon_partly_cloudy()
         elif code == 3:
-            _icon_draw_cloud(draw, cx, cy)
+            img = _icon_cloud()
         elif code in (45, 48):
-            _icon_fog(draw, cx, cy)
+            img = _icon_fog()
         elif code in (51, 53, 55, 56, 57):
-            _icon_rain(draw, cx, cy, heavy=False)
+            img = _icon_rain(heavy=False)
         elif code in (61, 63, 65, 66, 67):
-            _icon_rain(draw, cx, cy, heavy=(code in (65, 67)))
+            img = _icon_rain(heavy=(code in (65, 67)))
         elif code in (71, 73, 75, 77):
-            _icon_snow(draw, cx, cy)
+            img = _icon_snow()
         elif code in (80, 81, 82):
-            _icon_rain(draw, cx, cy, heavy=(code == 82))
+            img = _icon_rain(heavy=(code == 82))
         elif code in (85, 86):
-            _icon_snow(draw, cx, cy)
+            img = _icon_snow()
         elif code in (95, 96, 99):
-            _icon_thunder(draw, cx, cy)
+            img = _icon_thunder()
         else:
             # Unrecognized code: fall back to a plain cloud rather than
             # guessing, since an unknown code shouldn't be shown as sunny.
-            _icon_draw_cloud(draw, cx, cy)
+            img = _icon_cloud()
 
         out_buf = _io.BytesIO()
         img.save(out_buf, format="PNG")
