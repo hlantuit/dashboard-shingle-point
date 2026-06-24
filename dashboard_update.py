@@ -205,22 +205,28 @@ def table(header_cells, rows, has_column_header=True):
     }
  
  
-def columns(*column_block_lists):
+def columns(*column_block_lists, width_ratios=None):
     """
     Builds a column_list block with N columns, each containing the given
     list of child blocks. Notion requires all column content to be created
     in the same request as the column_list itself — content cannot be
     patched into columns afterward the way top-level blocks can.
+ 
+    width_ratios: optional list of floats (one per column, same order as
+    column_block_lists) between 0 and 1, summing to 1, to give columns
+    unequal widths. If omitted, Notion defaults to equal widths.
     """
+    column_objs = []
+    for i, blocks in enumerate(column_block_lists):
+        column_data = {"children": blocks}
+        if width_ratios:
+            column_data["width_ratio"] = width_ratios[i]
+        column_objs.append({"object": "block", "type": "column", "column": column_data})
+ 
     return {
         "object": "block",
         "type": "column_list",
-        "column_list": {
-            "children": [
-                {"object": "block", "type": "column", "column": {"children": blocks}}
-                for blocks in column_block_lists
-            ]
-        },
+        "column_list": {"children": column_objs},
     }
  
  
@@ -262,6 +268,20 @@ def image_block_from_upload(upload_id):
         "object": "block",
         "type": "image",
         "image": {"type": "file_upload", "file_upload": {"id": upload_id}},
+    }
+ 
+ 
+def external_image_block(url):
+    """
+    Image block referencing a directly-hosted external URL (not something
+    we fetch and re-upload ourselves). Per Notion's API docs, the URL must
+    be directly hosted — not a URL that points to a service that retrieves
+    the image — and .svg is among the supported image types.
+    """
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {"type": "external", "external": {"url": url}},
     }
  
  
@@ -1801,6 +1821,16 @@ def fetch_copernicus_water_level():
     so a problem here never blocks the rest of the dashboard.
     """
     try:
+        # The copernicusmarine library has no direct timeout/retries
+        # parameter on open_dataset() itself — these are configured via
+        # environment variables instead. Defaults are 60s timeout x 5
+        # retries per HTTP call, which can compound to many minutes if
+        # something (e.g. a credential issue) causes repeated failures.
+        # Setting tighter bounds here means a real problem fails fast
+        # rather than silently consuming the whole job's runtime.
+        os.environ.setdefault("COPERNICUSMARINE_HTTPS_TIMEOUT", "20")
+        os.environ.setdefault("COPERNICUSMARINE_HTTPS_RETRIES", "1")
+ 
         import copernicusmarine
  
         username = os.environ.get("COPERNICUS_USERNAME")
@@ -1983,7 +2013,19 @@ if water_level_chart_bytes:
 # =========================================================
 # ASSEMBLE DASHBOARD BLOCKS
 # =========================================================
+AWI_LOGO_URL = "https://www.awi.de/_assets/978631966794c5093250775de182779d/Images/AWI/awi_logo.svg"
+ 
+logo_column = [external_image_block(AWI_LOGO_URL)]
+attribution_column = [
+    paragraph(
+        "This dashboard is provided by the Alfred Wegener Institute Helmholtz Centre "
+        "for Polar and Marine Research."
+    )
+]
+ 
 blocks = [
+    columns(logo_column, attribution_column, width_ratios=[0.2, 0.8]),
+    divider(),
     paragraph(f"Last update (UTC): {now.strftime('%Y-%m-%d %H:%M')}"),
     divider(),
  
@@ -2003,6 +2045,42 @@ worldview_url = (
     f"&v={BBOX_3413}"
 )
 blocks.append(link_paragraph("Explore here →", worldview_url, prefix=f"{modis_caption}  "))
+blocks.append(divider())
+ 
+# --- Sentinel-1 SAR (VV decibel gamma0, orthorectified) ---
+# Placeholder until Sentinel Hub credentials (separate from Copernicus
+# Marine — a different service under the same Copernicus umbrella) are
+# set up. The Explore-here link is ready now: built from plain, documented
+# Copernicus Browser URL parameters (lat/lng/zoom/fromTime/toTime/layerId).
+# Note: the live link you shared included a 'visualizationUrl' parameter,
+# which is a client-side-encrypted blob we can't generate ourselves — this
+# link omits it and relies on 'layerId' alone to select the VV gamma0
+# visualization, which may or may not fully reproduce the exact same view
+# without manual confirmation.
+SENTINEL1_LAYER_ID = "IW-DV-VV-DECIBEL-GAMMA0-ORTHORECTIFIED"
+SENTINEL1_DATASET_ID = "S1_CDAS_IW_VVVH"
+ 
+sentinel1_date_str = now.strftime("%Y-%m-%d")
+sentinel1_from = f"{sentinel1_date_str}T00%3A00%3A00.000Z"
+sentinel1_to = f"{sentinel1_date_str}T23%3A59%3A59.999Z"
+sentinel1_url = (
+    f"https://browser.dataspace.copernicus.eu/?zoom=10"
+    f"&lat={LAT}&lng={LON}"
+    f"&themeId=DEFAULT-THEME"
+    f"&datasetId={SENTINEL1_DATASET_ID}"
+    f"&fromTime={sentinel1_from}&toTime={sentinel1_to}"
+    f"&layerId={SENTINEL1_LAYER_ID}"
+    f"&cloudCoverage=30&dateMode=TIME%20RANGE"
+)
+ 
+blocks.append(heading("🛰 Satellite — Sentinel-1 SAR (VV gamma0)"))
+blocks.append(paragraph(
+    "Placeholder — Sentinel Hub credentials not yet configured. "
+    "Once set up, this will show the latest available Sentinel-1 VV decibel "
+    "gamma0 (orthorectified) image, same extent and annotations as the MODIS block above, "
+    "leaving any area not covered by that day's satellite pass unmapped."
+))
+blocks.append(link_paragraph("Explore here →", sentinel1_url, prefix="Browse Sentinel-1 imagery directly on Copernicus Browser.  "))
 blocks.append(divider())
  
 # --- Row 1: current conditions (weather) + sun, side by side ---
