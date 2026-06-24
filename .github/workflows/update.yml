@@ -1,8 +1,13 @@
+
 name: Update Herschel Dashboard
 on:
   workflow_dispatch:        # keep this if you already have it — lets you trigger manually
   schedule:
     - cron: '0 * * * *'     # runs at the top of every hour, UTC
+ 
+permissions:
+  contents: write           # needed so the workflow can commit the historical data cache back to the repo
+ 
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -38,4 +43,19 @@ jobs:
           SENTINEL_HUB_CLIENT_ID: ${{ secrets.SENTINEL_HUB_CLIENT_ID }}
           SENTINEL_HUB_CLIENT_SECRET: ${{ secrets.SENTINEL_HUB_CLIENT_SECRET }}
         run: python dashboard_update.py
- 
+      # -------------------------
+      # 5. Commit the historical data cache back to the repo, if it changed
+      # -------------------------
+      # The script caches completed past years of weather data
+      # (cache/daily_temps_cache.json) so future runs don't need to
+      # re-fetch them from Open-Meteo every hour. This step persists any
+      # newly-cached years back to the repository. It's safe to run every
+      # time: if nothing changed (e.g. all years were already cached),
+      # the "git diff" check below skips the commit instead of failing.
+      - name: Commit updated cache
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add cache/daily_temps_cache.json
+          git diff --staged --quiet || git commit -m "Update historical data cache"
+          git push
