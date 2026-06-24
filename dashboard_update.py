@@ -2100,20 +2100,67 @@ def fetch_copernicus_water_level():
  
         ds = xr.open_dataset(thredds_url)
  
-        point = ds["zos"].sel(x=target_x, y=target_y, method="nearest")
+        # The TOPAZ6 grid is 3km resolution; near a coastline like
+        # Herschel Island's, the single geometrically-nearest cell can
+        # land on a masked/land grid point, which comes back as NaN
+        # rather than a clean error. Search a small neighborhood (a few
+        # grid cells in each direction) and use the nearest cell that
+        # actually has valid data, rather than trusting the nearest
+        # match blindly.
+        search_radius_m = 15_000  # ~5 grid cells in each direction
+        nearby = ds["zos"].sel(
+            x=slice(target_x - search_radius_m, target_x + search_radius_m),
+            y=slice(target_y - search_radius_m, target_y + search_radius_m),
+        )
  
         start = now
         end = now + timedelta(hours=24)
-        point = point.sel(time=slice(start, end))
+        nearby = nearby.sel(time=slice(start, end))
  
-        times = [str(t) for t in point["time"].values]
-        values = [float(v) for v in point.values.flatten()]
- 
-        if not times:
-            print("COPERNICUS WATER LEVEL: query returned no time steps in the requested window")
+        if nearby.size == 0:
+            print("COPERNICUS WATER LEVEL: no grid cells found near Herschel Island in this window")
             return None, None
  
-        return times, values
+        # For each candidate grid cell, check if it has any valid (non-NaN)
+        # data across the time window, and rank by distance to our target.
+        xs = nearby["x"].values
+        ys = nearby["y"].values
+        best_point = None
+        best_dist = None
+        for xi in xs:
+            for yi in ys:
+                cell = nearby.sel(x=xi, y=yi)
+                if bool(cell.notnull().any()):
+                    dist = math.hypot(xi - target_x, yi - target_y)
+                    if best_dist is None or dist < best_dist:
+                        best_dist = dist
+                        best_point = (xi, yi)
+ 
+        if best_point is None:
+            print("COPERNICUS WATER LEVEL: no valid (non-NaN) grid cells found near Herschel Island")
+            return None, None
+ 
+        print(f"COPERNICUS WATER LEVEL: using grid cell at distance {best_dist:.0f}m from Herschel Island")
+        point = nearby.sel(x=best_point[0], y=best_point[1])
+ 
+        times = [str(t) for t in point["time"].values]
+        raw_values = [float(v) for v in point.values.flatten()]
+ 
+        # Drop any remaining individual NaN time steps (a cell can be
+        # valid overall but still have occasional missing time steps)
+        # rather than letting a partial-NaN series through silently.
+        times_clean = []
+        values_clean = []
+        for t, v in zip(times, raw_values):
+            if not math.isnan(v):
+                times_clean.append(t)
+                values_clean.append(v)
+ 
+        if not values_clean:
+            print("COPERNICUS WATER LEVEL: selected cell had no valid values in this time window")
+            return None, None
+ 
+        return times_clean, values_clean
  
     except Exception as e:
         print("COPERNICUS WATER LEVEL FETCH FAILED:", e)
@@ -2655,3 +2702,4 @@ else:
 #   netCDF4
 #   notion-client
 #   requests
+ 
