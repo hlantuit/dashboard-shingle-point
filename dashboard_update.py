@@ -1,4 +1,5 @@
 
+ 
 import os
 import io
 import json
@@ -59,7 +60,7 @@ _temp_cache = load_temp_cache()
 _temp_cache_dirty = False  # tracks whether anything new was added this run, so we only write if needed
  
 # =========================================================
-# SITE CONSTANTS — Shingle Point
+# SITE CONSTANTS — Herschel Island / Qikiqtaruk
 # =========================================================
 LAT = 68.933333
 LON = -137.2
@@ -2594,15 +2595,17 @@ def annotate_plain_image(png_bytes, points=None, scale_km=50, half_width_m=150_0
     issue MODIS has, just without MODIS's compensating rotation step).
  
     points: list of (lat, lon, label) or (lat, lon, label, text_dy_offset)
-    tuples. Defaults to Herschel Island and Shingle Point if not given.
+    tuples. Defaults to Shingle Point, Herschel Island, Aklavik, and Inuvik if not given.
  
     Returns annotated PNG bytes, or the original bytes unchanged if
     annotation fails for any reason.
     """
     if points is None:
         points = [
-            (69.568861, -138.911754, "Qikiqtaruk Herschel Island", -28),
-            (68.989, -137.345, "Shingle Point", -10),
+            (68.933333, -137.2, "Shingle Point", -28),
+            (69.568861, -138.911754, "Qikiqtaruk Herschel Island", -10),
+            (68.226653, -135.003294, "Aklavik", -10),
+            (68.360741, -133.723022, "Inuvik", -10),
         ]
  
     if project_fn is None:
@@ -2861,7 +2864,7 @@ def fetch_and_process_sentinel1():
 # tide-table stations across Canada including the Arctic. Station IDs are
 # internal UUIDs, not the public 5-digit code, so we resolve the code to an
 # ID first, then request water level predictions (wlp) for that station.
-SHINGLE_POINT_STATION_CODE = "06505"
+HERSCHEL_STATION_CODE = "06505"  # Shingle Point IWLS station — variable name kept for simplicity, value updated
  
  
 def find_iwls_station_id(code):
@@ -2899,7 +2902,7 @@ def fetch_tide_predictions(station_id, hours_ahead=24):
         return None
  
  
-station_id = find_iwls_station_id(SHINGLE_POINT_STATION_CODE)
+station_id = find_iwls_station_id(HERSCHEL_STATION_CODE)
 tide_points = fetch_tide_predictions(station_id, hours_ahead=24*7) if station_id else None
  
 if tide_points:
@@ -3292,6 +3295,135 @@ def build_water_level_chart(times, values, yearly_mean=None):
         return None, "Water level chart could not be generated — see Action logs."
  
  
+# =========================================================
+# MODULE — RIVER DISCHARGE (Mackenzie River, Napoiak Channel above Shallow
+# Bay, ECCC Water Survey of Canada station 10MC023)
+# Distinct from the Total Water Level module above: that's a model
+# forecast of tide + storm surge at the coast, while this is a real,
+# directly-measured river discharge (streamflow) value at a station well
+# upstream in the Mackenzie Delta, from ECCC's public real-time
+# hydrometric CSV datamart (no authentication required). The "daily"
+# frequency file already contains exactly the last 30 complete days plus
+# the current incomplete day, so no separate historical-archive request
+# is needed for a 30-day view, unlike the temperature/wind charts above.
+# Source format confirmed against ECCC's own documentation:
+# https://eccc-msc.github.io/open-data/msc-data/obs_hydrometric/readme_hydrometric-datamart_en/
+# =========================================================
+DISCHARGE_STATION_ID = "10MC023"
+DISCHARGE_PROVTERR = "NT"
+DISCHARGE_URL = (
+    f"https://dd.weather.gc.ca/today/hydrometric/csv/{DISCHARGE_PROVTERR}/daily/"
+    f"{DISCHARGE_PROVTERR}_{DISCHARGE_STATION_ID}_daily_hydrometric.csv"
+)
+ 
+ 
+def fetch_discharge_data():
+    """
+    Fetches the last ~30 days of daily discharge (cms) for the Napoiak
+    Channel station from ECCC's public hydrometric CSV datamart.
+ 
+    Returns (times, values_cms) as parallel lists (naive local datetimes,
+    UTC-offset suffix stripped since a once-per-day discharge value
+    doesn't need timezone math for a 30-day chart), or (None, None) on
+    failure, so a problem here never blocks the rest of the dashboard.
+    """
+    try:
+        resp = requests.get(DISCHARGE_URL, timeout=20)
+        resp.raise_for_status()
+ 
+        import csv as _csv
+ 
+        # First line is a bilingual header, not data — skip it.
+        lines = resp.text.splitlines()
+        reader = _csv.reader(lines[1:])
+ 
+        times = []
+        values_cms = []
+        for row in reader:
+            if len(row) < 7:
+                continue
+            date_str = row[1].strip()
+            discharge_str = row[6].strip()
+            if not discharge_str:
+                continue  # this timestamp has a water level but no discharge value
+            try:
+                # Timestamps look like "2026-06-24T00:00:00-07:00" — keep
+                # only the naive local date/time portion (first 19 chars,
+                # "YYYY-MM-DDTHH:MM:SS"), dropping the UTC-offset suffix.
+                t = datetime.fromisoformat(date_str[:19])
+                v = float(discharge_str)
+            except Exception:
+                continue
+            times.append(t)
+            values_cms.append(v)
+ 
+        if not values_cms:
+            print("DISCHARGE: fetch succeeded but no usable discharge values found in CSV")
+            return None, None
+ 
+        print(f"DISCHARGE: parsed {len(values_cms)} daily values from {DISCHARGE_URL}")
+        return times, values_cms
+ 
+    except Exception as e:
+        print("DISCHARGE FETCH FAILED:", e)
+        return None, None
+ 
+ 
+def build_discharge_chart(times, values_cms):
+    if not times or not values_cms:
+        return None, "River discharge chart unavailable — no data."
+ 
+    try:
+        t0 = times[0]
+        hours = [(t - t0).total_seconds() / 3600 for t in times]
+ 
+        NOTION_GREEN = "#4F9768"
+        NOTION_RED = "#E16259"
+        NOTION_TEXT_GRAY = "#787774"
+        NOTION_LIGHT_GRID = "#EDECEC"
+ 
+        plt.rcParams["font.family"] = "DejaVu Sans"
+        fig, ax = plt.subplots(figsize=(5.5, 3.2), dpi=150)
+        fig.patch.set_alpha(0)
+        ax.set_facecolor("none")
+ 
+        ax.fill_between(hours, values_cms, min(values_cms), color=NOTION_GREEN, alpha=0.12, linewidth=0, zorder=1)
+        ax.plot(hours, values_cms, linewidth=2.5, color=NOTION_GREEN, zorder=2)
+        ax.plot([hours[-1]], [values_cms[-1]], marker="o", markersize=8,
+                 color=NOTION_RED, markeredgecolor="white", markeredgewidth=1.5, zorder=3)
+ 
+        for spine in ["top", "right", "left"]:
+            ax.spines[spine].set_visible(False)
+        ax.spines["bottom"].set_color(NOTION_LIGHT_GRID)
+ 
+        ax.set_xlim(0, max(hours))
+        tick_hours = list(range(0, int(max(hours)) + 1, 5 * 24))  # every 5 days, to avoid crowding over a 30-day span
+        tick_labels = [(t0 + timedelta(hours=h)).strftime("%b %d") for h in tick_hours]
+        ax.set_xticks(tick_hours)
+        ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
+        ax.tick_params(axis="y", labelsize=9, colors=NOTION_TEXT_GRAY, length=0)
+        ax.tick_params(axis="x", length=0)
+        ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
+        ax.xaxis.grid(False)
+        ax.set_axisbelow(True)
+        ax.set_ylabel("Discharge (m\u00b3/s)", fontsize=10, color=NOTION_TEXT_GRAY)
+ 
+        fig.tight_layout()
+        png_bytes = fig_to_png_bytes(fig)
+        span_days = round(max(hours) / 24)
+        end_label = times[-1].strftime("%b %d, %Y")
+        caption = (
+            f"Mackenzie River discharge, Napoiak Channel above Shallow Bay, "
+            f"past {span_days} days, ending {end_label}. "
+            f"Source: ECCC Water Survey of Canada, station {DISCHARGE_STATION_ID} (real-time, preliminary/unreviewed)."
+        )
+        return png_bytes, caption
+ 
+    except Exception as e:
+        print("DISCHARGE CHART FAILED:", e)
+        return None, "Discharge chart could not be generated — see Action logs."
+ 
+ 
 # water_level_chart_bytes/caption are built later, right after the
 # parallel executor block produces copernicus_times/copernicus_values.
  
@@ -3474,7 +3606,7 @@ tide_card = [
     ),
     link_paragraph(
         "Full station data →",
-        f"https://www.tides.gc.ca/en/stations/{SHINGLE_POINT_STATION_CODE}",
+        f"https://www.tides.gc.ca/en/stations/{HERSCHEL_STATION_CODE}",
         prefix=f"{tide_chart_caption if tide_chart_bytes else 'Tide chart could not be generated — see Action logs.'}  ",
         prefix_gray=True,
     ),
@@ -3901,11 +4033,12 @@ sentinel1_caption = "Sentinel-1 SAR image unavailable — credentials missing or
 # already be defined by the time this block actually calls them.
 from concurrent.futures import ThreadPoolExecutor as _TopLevelExecutor
  
-print("STARTING: parallel fetch of MODIS, water level, and Sentinel-1")
-with _TopLevelExecutor(max_workers=3) as _top_level_executor:
+print("STARTING: parallel fetch of MODIS, water level, Sentinel-1, and river discharge")
+with _TopLevelExecutor(max_workers=4) as _top_level_executor:
     _modis_future = _top_level_executor.submit(fetch_and_process_modis)
     _water_level_future = _top_level_executor.submit(fetch_copernicus_water_level)
     _sentinel1_future = _top_level_executor.submit(fetch_and_process_sentinel1)
+    _discharge_future = _top_level_executor.submit(fetch_discharge_data)
  
     try:
         modis_bytes, modis_date = _modis_future.result()
@@ -3926,6 +4059,12 @@ with _TopLevelExecutor(max_workers=3) as _top_level_executor:
         sentinel1_bytes = None
         sentinel1_caption = "Sentinel-1 SAR image unavailable — fetch failed. Check Action logs."
  
+    try:
+        discharge_times, discharge_values = _discharge_future.result()
+    except Exception as e:
+        print("DISCHARGE PARALLEL FETCH FAILED:", e)
+        discharge_times, discharge_values = None, None
+ 
 if copernicus_times and copernicus_values:
     current_level_total = copernicus_values[0]
     max_level_total = max(copernicus_values)
@@ -3943,6 +4082,7 @@ else:
     )
  
 water_level_chart_bytes, water_level_chart_caption = build_water_level_chart(copernicus_times, copernicus_values, copernicus_yearly_mean)
+discharge_chart_bytes, discharge_chart_caption = build_discharge_chart(discharge_times, discharge_values)
  
 modis_block = None
 modis_caption = "No valid MODIS image found in the last 5 days (cloud cover or processing delay)."
@@ -3980,6 +4120,27 @@ _total_water_level_blocks.append(
     paragraph(water_level_chart_caption if water_level_chart_bytes else "Water level chart could not be generated — see Action logs.")
 )
 _total_water_level_blocks.append(divider())
+ 
+discharge_chart_block = None
+if discharge_chart_bytes:
+    try:
+        uid = upload_image_to_notion(discharge_chart_bytes, "discharge_chart.png")
+        discharge_chart_block = image_block_from_upload(uid)
+    except Exception as e:
+        print("DISCHARGE CHART NOTION UPLOAD FAILED:", e)
+        discharge_chart_caption = "Discharge chart generated but upload to Notion failed — see Action logs."
+ 
+_discharge_blocks = [
+    heading("💧 Mackenzie River Discharge — Napoiak Channel above Shallow Bay"),
+]
+if discharge_chart_block:
+    _discharge_blocks.append(discharge_chart_block)
+_discharge_blocks.append(
+    paragraph(discharge_chart_caption if discharge_chart_bytes else "Discharge chart could not be generated — see Action logs.")
+)
+_discharge_blocks.append(divider())
+ 
+_total_water_level_blocks.extend(_discharge_blocks)
  
 blocks.append(heading("🛰 Satellite View of the Island"))
 if modis_block:
