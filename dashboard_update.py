@@ -3304,102 +3304,108 @@ def build_water_level_chart(times, values, yearly_mean=None):
  
  
 # =========================================================
-# MODULE — RIVER DISCHARGE (Mackenzie River, Napoiak Channel above Shallow
-# Bay, ECCC Water Survey of Canada station 10MC023)
+# MODULE — NAPOIAK CHANNEL WATER LEVEL (Mackenzie River, Napoiak Channel
+# above Shallow Bay, ECCC Water Survey of Canada station 10MC023)
 # Distinct from the Total Water Level module above: that's a model
 # forecast of tide + storm surge at the coast, while this is a real,
-# directly-measured river discharge (streamflow) value at a station well
-# upstream in the Mackenzie Delta, from ECCC's public real-time
-# hydrometric CSV datamart (no authentication required). The "daily"
-# frequency file already contains exactly the last 30 complete days plus
-# the current incomplete day, so no separate historical-archive request
-# is needed for a 30-day view, unlike the temperature/wind charts above.
+# directly-measured river water level at a station well upstream in the
+# Mackenzie Delta, from ECCC's public real-time hydrometric CSV datamart
+# (no authentication required). The "daily" frequency file already
+# contains exactly the last 30 complete days plus the current incomplete
+# day, so no separate historical-archive request is needed for a 30-day
+# view, unlike the temperature/wind charts above.
+#
+# NOTE: this station (10MC023) reports Water Level only, not Discharge —
+# confirmed empirically (the Discharge column came back empty for every
+# row on a real run) rather than assumed from documentation alone. Not
+# every WSC hydrometric station measures both products.
+#
 # Source format confirmed against ECCC's own documentation:
 # https://eccc-msc.github.io/open-data/msc-data/obs_hydrometric/readme_hydrometric-datamart_en/
+# Column layout: ID,Date,Water Level (m),Grade,Symbol,QA/QC,Discharge (cms),Grade,Symbol,QA/QC
 # =========================================================
-DISCHARGE_STATION_ID = "10MC023"
-DISCHARGE_PROVTERR = "NT"
-DISCHARGE_URL = (
-    f"https://dd.weather.gc.ca/today/hydrometric/csv/{DISCHARGE_PROVTERR}/daily/"
-    f"{DISCHARGE_PROVTERR}_{DISCHARGE_STATION_ID}_daily_hydrometric.csv"
+NAPOIAK_STATION_ID = "10MC023"
+NAPOIAK_PROVTERR = "NT"
+NAPOIAK_URL = (
+    f"https://dd.weather.gc.ca/today/hydrometric/csv/{NAPOIAK_PROVTERR}/daily/"
+    f"{NAPOIAK_PROVTERR}_{NAPOIAK_STATION_ID}_daily_hydrometric.csv"
 )
  
  
-def fetch_discharge_data():
+def fetch_napoiak_water_level():
     """
-    Fetches the last ~30 days of daily discharge (cms) for the Napoiak
+    Fetches the last ~30 days of daily water level (m) for the Napoiak
     Channel station from ECCC's public hydrometric CSV datamart.
  
-    Returns (times, values_cms) as parallel lists (naive local datetimes,
-    UTC-offset suffix stripped since a once-per-day discharge value
-    doesn't need timezone math for a 30-day chart), or (None, None) on
-    failure, so a problem here never blocks the rest of the dashboard.
+    Returns (times, values_m) as parallel lists (naive local datetimes,
+    UTC-offset suffix stripped since a once-per-day value doesn't need
+    timezone math for a 30-day chart), or (None, None) on failure, so a
+    problem here never blocks the rest of the dashboard.
     """
     try:
-        resp = requests.get(DISCHARGE_URL, timeout=20)
+        resp = requests.get(NAPOIAK_URL, timeout=20)
         resp.raise_for_status()
  
         import csv as _csv
  
         # First line is a bilingual header, not data — skip it.
         lines = resp.text.splitlines()
-        print(f"DISCHARGE DEBUG: fetched {len(resp.content)} bytes, {len(lines)} lines total")
+        print(f"NAPOIAK DEBUG: fetched {len(resp.content)} bytes, {len(lines)} lines total")
         if lines:
-            print(f"DISCHARGE DEBUG: header line: {lines[0]!r}")
+            print(f"NAPOIAK DEBUG: header line: {lines[0]!r}")
         for sample_row in lines[1:4]:
-            print(f"DISCHARGE DEBUG: sample data row: {sample_row!r}")
+            print(f"NAPOIAK DEBUG: sample data row: {sample_row!r}")
  
         reader = _csv.reader(lines[1:])
  
         times = []
-        values_cms = []
+        values_m = []
         rows_seen = 0
         rows_too_short = 0
-        rows_empty_discharge = 0
+        rows_empty_level = 0
         rows_parse_failed = 0
         for row in reader:
             rows_seen += 1
-            if len(row) < 7:
+            if len(row) < 3:
                 rows_too_short += 1
                 continue
             date_str = row[1].strip()
-            discharge_str = row[6].strip()
-            if not discharge_str:
-                rows_empty_discharge += 1
-                continue  # this timestamp has a water level but no discharge value
+            level_str = row[2].strip()
+            if not level_str:
+                rows_empty_level += 1
+                continue
             try:
                 # Timestamps look like "2026-06-24T00:00:00-07:00" — keep
                 # only the naive local date/time portion (first 19 chars,
                 # "YYYY-MM-DDTHH:MM:SS"), dropping the UTC-offset suffix.
                 t = datetime.fromisoformat(date_str[:19])
-                v = float(discharge_str)
+                v = float(level_str)
             except Exception:
                 rows_parse_failed += 1
                 continue
             times.append(t)
-            values_cms.append(v)
+            values_m.append(v)
  
-        print(f"DISCHARGE DEBUG: rows_seen={rows_seen}, rows_too_short={rows_too_short}, "
-              f"rows_empty_discharge={rows_empty_discharge}, rows_parse_failed={rows_parse_failed}, "
-              f"rows_kept={len(values_cms)}")
+        print(f"NAPOIAK DEBUG: rows_seen={rows_seen}, rows_too_short={rows_too_short}, "
+              f"rows_empty_level={rows_empty_level}, rows_parse_failed={rows_parse_failed}, "
+              f"rows_kept={len(values_m)}")
  
-        if not values_cms:
-            print("DISCHARGE: fetch succeeded but no usable discharge values found in CSV "
-                  "— see DISCHARGE DEBUG lines above for the actual column layout and why "
-                  "rows were rejected (this station may not report Discharge, only Water Level)")
+        if not values_m:
+            print("NAPOIAK: fetch succeeded but no usable water level values found in CSV "
+                  "— see NAPOIAK DEBUG lines above for the actual column layout")
             return None, None
  
-        print(f"DISCHARGE: parsed {len(values_cms)} daily values from {DISCHARGE_URL}")
-        return times, values_cms
+        print(f"NAPOIAK: parsed {len(values_m)} daily values from {NAPOIAK_URL}")
+        return times, values_m
  
     except Exception as e:
-        print("DISCHARGE FETCH FAILED:", e)
+        print("NAPOIAK FETCH FAILED:", e)
         return None, None
  
  
-def build_discharge_chart(times, values_cms):
-    if not times or not values_cms:
-        return None, "River discharge chart unavailable — no data."
+def build_napoiak_chart(times, values_m):
+    if not times or not values_m:
+        return None, "Napoiak Channel water level chart unavailable — no data."
  
     try:
         t0 = times[0]
@@ -3415,9 +3421,9 @@ def build_discharge_chart(times, values_cms):
         fig.patch.set_alpha(0)
         ax.set_facecolor("none")
  
-        ax.fill_between(hours, values_cms, min(values_cms), color=NOTION_GREEN, alpha=0.12, linewidth=0, zorder=1)
-        ax.plot(hours, values_cms, linewidth=2.5, color=NOTION_GREEN, zorder=2)
-        ax.plot([hours[-1]], [values_cms[-1]], marker="o", markersize=8,
+        ax.fill_between(hours, values_m, min(values_m), color=NOTION_GREEN, alpha=0.12, linewidth=0, zorder=1)
+        ax.plot(hours, values_m, linewidth=2.5, color=NOTION_GREEN, zorder=2)
+        ax.plot([hours[-1]], [values_m[-1]], marker="o", markersize=8,
                  color=NOTION_RED, markeredgecolor="white", markeredgewidth=1.5, zorder=3)
  
         for spine in ["top", "right", "left"]:
@@ -3434,23 +3440,22 @@ def build_discharge_chart(times, values_cms):
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
         ax.xaxis.grid(False)
         ax.set_axisbelow(True)
-        ax.set_ylabel("Discharge (m\u00b3/s)", fontsize=10, color=NOTION_TEXT_GRAY)
+        ax.set_ylabel("Water level (m)", fontsize=10, color=NOTION_TEXT_GRAY)
  
         fig.tight_layout()
         png_bytes = fig_to_png_bytes(fig)
         span_days = round(max(hours) / 24)
         end_label = times[-1].strftime("%b %d, %Y")
         caption = (
-            f"Mackenzie River discharge, Napoiak Channel above Shallow Bay, "
+            f"Mackenzie River water level, Napoiak Channel above Shallow Bay, "
             f"past {span_days} days, ending {end_label}. "
-            f"Source: ECCC Water Survey of Canada, station {DISCHARGE_STATION_ID} (real-time, preliminary/unreviewed)."
+            f"Source: ECCC Water Survey of Canada, station {NAPOIAK_STATION_ID} (real-time, preliminary/unreviewed)."
         )
         return png_bytes, caption
  
     except Exception as e:
-        print("DISCHARGE CHART FAILED:", e)
-        return None, "Discharge chart could not be generated — see Action logs."
- 
+        print("NAPOIAK CHART FAILED:", e)
+        return None, "Napoiak Channel water level chart could not be generated — see Action logs."
  
 # water_level_chart_bytes/caption are built later, right after the
 # parallel executor block produces copernicus_times/copernicus_values.
@@ -4061,12 +4066,12 @@ sentinel1_caption = "Sentinel-1 SAR image unavailable — credentials missing or
 # already be defined by the time this block actually calls them.
 from concurrent.futures import ThreadPoolExecutor as _TopLevelExecutor
  
-print("STARTING: parallel fetch of MODIS, water level, Sentinel-1, and river discharge")
+print("STARTING: parallel fetch of MODIS, water level, Sentinel-1, and Napoiak Channel water level")
 with _TopLevelExecutor(max_workers=4) as _top_level_executor:
     _modis_future = _top_level_executor.submit(fetch_and_process_modis)
     _water_level_future = _top_level_executor.submit(fetch_copernicus_water_level)
     _sentinel1_future = _top_level_executor.submit(fetch_and_process_sentinel1)
-    _discharge_future = _top_level_executor.submit(fetch_discharge_data)
+    _napoiak_future = _top_level_executor.submit(fetch_napoiak_water_level)
  
     try:
         modis_bytes, modis_date = _modis_future.result()
@@ -4088,10 +4093,10 @@ with _TopLevelExecutor(max_workers=4) as _top_level_executor:
         sentinel1_caption = "Sentinel-1 SAR image unavailable — fetch failed. Check Action logs."
  
     try:
-        discharge_times, discharge_values = _discharge_future.result()
+        napoiak_times, napoiak_values = _napoiak_future.result()
     except Exception as e:
-        print("DISCHARGE PARALLEL FETCH FAILED:", e)
-        discharge_times, discharge_values = None, None
+        print("NAPOIAK PARALLEL FETCH FAILED:", e)
+        napoiak_times, napoiak_values = None, None
  
 if copernicus_times and copernicus_values:
     current_level_total = copernicus_values[0]
@@ -4110,7 +4115,7 @@ else:
     )
  
 water_level_chart_bytes, water_level_chart_caption = build_water_level_chart(copernicus_times, copernicus_values, copernicus_yearly_mean)
-discharge_chart_bytes, discharge_chart_caption = build_discharge_chart(discharge_times, discharge_values)
+napoiak_chart_bytes, napoiak_chart_caption = build_napoiak_chart(napoiak_times, napoiak_values)
  
 modis_block = None
 modis_caption = "No valid MODIS image found in the last 5 days (cloud cover or processing delay)."
@@ -4149,26 +4154,26 @@ _total_water_level_blocks.append(
 )
 _total_water_level_blocks.append(divider())
  
-discharge_chart_block = None
-if discharge_chart_bytes:
+napoiak_chart_block = None
+if napoiak_chart_bytes:
     try:
-        uid = upload_image_to_notion(discharge_chart_bytes, "discharge_chart.png")
-        discharge_chart_block = image_block_from_upload(uid)
+        uid = upload_image_to_notion(napoiak_chart_bytes, "napoiak_chart.png")
+        napoiak_chart_block = image_block_from_upload(uid)
     except Exception as e:
-        print("DISCHARGE CHART NOTION UPLOAD FAILED:", e)
-        discharge_chart_caption = "Discharge chart generated but upload to Notion failed — see Action logs."
+        print("NAPOIAK CHART NOTION UPLOAD FAILED:", e)
+        napoiak_chart_caption = "Napoiak Channel water level chart generated but upload to Notion failed — see Action logs."
  
-_discharge_blocks = [
-    heading("💧 Mackenzie River Discharge — Napoiak Channel above Shallow Bay"),
+_napoiak_blocks = [
+    heading("💧 Napoiak Channel Water Level — Mackenzie River above Shallow Bay"),
 ]
-if discharge_chart_block:
-    _discharge_blocks.append(discharge_chart_block)
-_discharge_blocks.append(
-    paragraph(discharge_chart_caption if discharge_chart_bytes else "Discharge chart could not be generated — see Action logs.")
+if napoiak_chart_block:
+    _napoiak_blocks.append(napoiak_chart_block)
+_napoiak_blocks.append(
+    paragraph(napoiak_chart_caption if napoiak_chart_bytes else "Napoiak Channel water level chart could not be generated — see Action logs.")
 )
-_discharge_blocks.append(divider())
+_napoiak_blocks.append(divider())
  
-_total_water_level_blocks.extend(_discharge_blocks)
+_total_water_level_blocks.extend(_napoiak_blocks)
  
 blocks.append(heading("🛰 Satellite View of Shingle Point"))
 if modis_block:
@@ -4303,4 +4308,3 @@ else:
 #   netCDF4
 #   notion-client
 #   requests
- 
