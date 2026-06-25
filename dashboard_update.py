@@ -3270,7 +3270,7 @@ def build_water_level_chart(times, values, yearly_mean=None):
         # Reference line at zero (= the yearly average itself) when
         # plotting relative values, so "typical" is a clean, simple
         # horizontal line rather than needing its own value label.
-         if yearly_mean is not None:
+        if yearly_mean is not None:
             ax.axhline(0, color=NOTION_GRAY_LINE, linewidth=1.5, linestyle="--", zorder=1.5)
             place_reference_line_label(ax, hours, plot_values, f"yearly avg ({yearly_mean:.2f}m)", NOTION_GRAY_LINE)
  
