@@ -3071,16 +3071,23 @@ def fetch_copernicus_water_level():
             print("COPERNICUS WATER LEVEL: no grid cells found near Herschel Island in this window")
             return None, None
  
-        # For each candidate grid cell, check if it has any valid (non-NaN)
-        # data across the time window, and rank by distance to our target.
+        # Vectorized validity check across the WHOLE x/y grid at once,
+        # instead of 1,000+ individual .sel() calls in a Python loop (each
+        # of which has real xarray indexing overhead — label lookup,
+        # bounds checking — that adds up badly when repeated this many
+        # times just to check "is there any valid value here"). This
+        # computes "has any non-NaN value over time" for every cell in
+        # one bulk operation, collapsing the time dimension, leaving a
+        # small 2D (y, x) boolean array that's cheap to scan in Python.
+        has_valid_data = nearby.notnull().any(dim="time").values  # shape (y, x)
         xs = nearby["x"].values
         ys = nearby["y"].values
+ 
         best_point = None
         best_dist = None
-        for xi in xs:
-            for yi in ys:
-                cell = nearby.sel(x=xi, y=yi)
-                if bool(cell.notnull().any()):
+        for yi_idx, yi in enumerate(ys):
+            for xi_idx, xi in enumerate(xs):
+                if has_valid_data[yi_idx, xi_idx]:
                     dist = math.hypot(xi - target_x, yi - target_y)
                     if best_dist is None or dist < best_dist:
                         best_dist = dist
