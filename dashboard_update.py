@@ -59,10 +59,10 @@ _temp_cache = load_temp_cache()
 _temp_cache_dirty = False  # tracks whether anything new was added this run, so we only write if needed
  
 # =========================================================
-# SITE CONSTANTS — Herschel Island / Qikiqtaruk
+# SITE CONSTANTS — Shingle Point
 # =========================================================
-LAT = 69.590
-LON = -139.099
+LAT = 68.933333
+LON = -137.2
  
 # Computed once via compute_yearly_mean_once.py (real run, not a
 # placeholder) — see that script for methodology (single nearest grid
@@ -2859,7 +2859,7 @@ def fetch_and_process_sentinel1():
 # tide-table stations across Canada including the Arctic. Station IDs are
 # internal UUIDs, not the public 5-digit code, so we resolve the code to an
 # ID first, then request water level predictions (wlp) for that station.
-HERSCHEL_STATION_CODE = "06525"
+SHINGLE_POINT_STATION_CODE = "06505"
  
  
 def find_iwls_station_id(code):
@@ -2897,7 +2897,7 @@ def fetch_tide_predictions(station_id, hours_ahead=24):
         return None
  
  
-station_id = find_iwls_station_id(HERSCHEL_STATION_CODE)
+station_id = find_iwls_station_id(SHINGLE_POINT_STATION_CODE)
 tide_points = fetch_tide_predictions(station_id, hours_ahead=24*7) if station_id else None
  
 if tide_points:
@@ -2918,11 +2918,11 @@ if tide_points:
     tide_text = [
         ("Predicted water level (now): ", f"{current_level:.2f} m"),
         ["Next 24h range: ", ("", f"{next_min:.2f} m"), " to ", ("", f"{next_max:.2f} m")],
-        "Reference: chart datum, Herschel Island station (06525)",
+        "Reference: chart datum, Shingle Point station (06505)",
     ]
 else:
     tide_text = (
-        "Tide prediction data unavailable for Herschel Island station (06525).\n"
+        "Tide prediction data unavailable for Shingle Point station (06505).\n"
         "Check Action logs — this uses DFO's IWLS API, which requires resolving "
         "the station code to an internal station ID first; if DFO changes that "
         "station's status or the API shape, this lookup may need adjustment."
@@ -3472,7 +3472,7 @@ tide_card = [
     ),
     link_paragraph(
         "Full station data →",
-        f"https://www.tides.gc.ca/en/stations/{HERSCHEL_STATION_CODE}",
+        f"https://www.tides.gc.ca/en/stations/{SHINGLE_POINT_STATION_CODE}",
         prefix=f"{tide_chart_caption if tide_chart_bytes else 'Tide chart could not be generated — see Action logs.'}  ",
         prefix_gray=True,
     ),
