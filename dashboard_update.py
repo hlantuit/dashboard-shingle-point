@@ -702,12 +702,14 @@ def _icon_wind_arrow(direction_from_deg, speed_kmh):
     tail = (cx - dx, cy - dy)
     tip = (cx + dx, cy + dy)
  
-    if speed_kmh < 10:
-        color = (200, 206, 213, 255)
-    elif speed_kmh < 25:
-        color = (100, 160, 220, 255)
-    else:
-        color = (64, 110, 200, 255)
+    import matplotlib
+    # Same colormap and 0-40 km/h normalization as the 30-day wind vector
+    # chart, so this single current-conditions arrow is genuinely
+    # color-consistent with that chart, not just a similar-looking but
+    # separately hand-picked scheme.
+    _norm_speed = max(0, min(speed_kmh, 40)) / 40
+    _plasma_rgba = matplotlib.colormaps["plasma"](_norm_speed)
+    color = tuple(round(c * 255) for c in _plasma_rgba[:3]) + (255,)
  
     shadow = _icon_new_canvas()
     sd = ImageDraw.Draw(shadow)
@@ -1010,8 +1012,7 @@ def build_mini_forecast_strip(days_data):
  
         n = len(days_data)
         cell_w, cell_h = 100, 130
-        NOTION_BLUE_BG = (231, 243, 248)
-        canvas = Image.new("RGB", (cell_w * n, cell_h), NOTION_BLUE_BG)
+        canvas = Image.new("RGBA", (cell_w * n, cell_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(canvas)
  
         try:
@@ -1064,8 +1065,7 @@ def build_large_forecast_strip(days_data):
  
         n = len(days_data)
         cell_w, cell_h = 170, 230
-        NOTION_BLUE_BG = (231, 243, 248)
-        canvas = Image.new("RGB", (cell_w * n, cell_h), NOTION_BLUE_BG)
+        canvas = Image.new("RGBA", (cell_w * n, cell_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(canvas)
  
         try:
@@ -1127,12 +1127,12 @@ def build_wind_forecast_mini_chart(hourly_wind_forecast):
         NOTION_LIGHT_GRID = "#EDECEC"
  
         plt.rcParams["font.family"] = "DejaVu Sans"
-        fig, ax = plt.subplots(figsize=(5, 2.2), dpi=150)
+        fig, ax = plt.subplots(figsize=(4.2, 2.4), dpi=150)
         fig.patch.set_alpha(0)
         ax.set_facecolor("none")
  
         ax.fill_between(hours, speeds, 0, color=NOTION_BLUE, alpha=0.15, linewidth=0)
-        ax.plot(hours, speeds, color=NOTION_BLUE, linewidth=2)
+        ax.plot(hours, speeds, color=NOTION_BLUE, linewidth=3)
  
         for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
@@ -1142,12 +1142,12 @@ def build_wind_forecast_mini_chart(hourly_wind_forecast):
         tick_positions = [h for h in [0, 12, 24, 36, 48] if h <= max_h]
         tick_labels = ["now" if h == 0 else f"+{h}h" for h in tick_positions]
         ax.set_xticks(tick_positions)
-        ax.set_xticklabels(tick_labels, fontsize=8, color=NOTION_TEXT_GRAY)
-        ax.tick_params(axis="y", labelsize=8, colors=NOTION_TEXT_GRAY, length=0)
+        ax.set_xticklabels(tick_labels, fontsize=16, color=NOTION_TEXT_GRAY)
+        ax.tick_params(axis="y", labelsize=16, colors=NOTION_TEXT_GRAY, length=0)
         ax.tick_params(axis="x", length=0)
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1)
         ax.set_axisbelow(True)
-        ax.set_ylabel("km/h", fontsize=9, color=NOTION_TEXT_GRAY)
+        ax.set_ylabel("km/h", fontsize=17, color=NOTION_TEXT_GRAY)
         ax.set_ylim(0, max(speeds) * 1.2 if speeds else 10)
  
         fig.tight_layout()
@@ -1562,17 +1562,17 @@ def build_sun_curve_chart():
         NOTION_HORIZON = "#D4A72C"
  
         plt.rcParams["font.family"] = "DejaVu Sans"
-        fig, ax = plt.subplots(figsize=(5.5, 3.2), dpi=150)
+        fig, ax = plt.subplots(figsize=(4.5, 2.8), dpi=150)
         fig.patch.set_alpha(0)
         ax.set_facecolor("none")
  
         ax.fill_between(hour_floats, elevations, 0, where=[e > 0 for e in elevations],
                          color=NOTION_YELLOW, alpha=0.18, linewidth=0, zorder=1)
-        ax.plot(hour_floats, elevations, linewidth=2.5, color=NOTION_YELLOW, zorder=2)
+        ax.plot(hour_floats, elevations, linewidth=3, color=NOTION_YELLOW, zorder=2)
         ax.axhline(0, color=NOTION_HORIZON, linewidth=1.2, alpha=0.6, zorder=1)
  
-        ax.plot([current_hour_float], [current_elevation], marker="o", markersize=16,
-                 color=NOTION_YELLOW, markeredgecolor=NOTION_RED, markeredgewidth=2, zorder=3)
+        ax.plot([current_hour_float], [current_elevation], marker="o", markersize=18,
+                 color=NOTION_YELLOW, markeredgecolor=NOTION_RED, markeredgewidth=2.5, zorder=3)
  
         for spine in ["top", "right", "left"]:
             ax.spines[spine].set_visible(False)
@@ -1580,13 +1580,13 @@ def build_sun_curve_chart():
  
         ax.set_xlim(0, 24)
         ax.set_xticks(range(0, 25, 6))
-        ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 25, 6)], fontsize=9, color=NOTION_TEXT_GRAY)
-        ax.tick_params(axis="y", labelsize=10, colors=NOTION_TEXT_GRAY, length=0)
+        ax.set_xticklabels([f"{h:02d}:00" for h in range(0, 25, 6)], fontsize=16, color=NOTION_TEXT_GRAY)
+        ax.tick_params(axis="y", labelsize=16, colors=NOTION_TEXT_GRAY, length=0)
         ax.tick_params(axis="x", length=0)
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
         ax.xaxis.grid(False)
         ax.set_axisbelow(True)
-        ax.set_ylabel("Elevation (°)", fontsize=10, color=NOTION_TEXT_GRAY)
+        ax.set_ylabel("Elevation (°)", fontsize=17, color=NOTION_TEXT_GRAY)
  
         fig.tight_layout()
         png_bytes = fig_to_png_bytes(fig)
@@ -2169,7 +2169,7 @@ def build_wind_vector_chart():
  
         quiv = ax.quiver(
             x, [0] * len(x), u_arrows, v_arrows,
-            daily_speed, cmap="YlOrRd", scale=220, width=0.005,
+            daily_speed, cmap="plasma", scale=220, width=0.005,
             pivot="tail", clim=(0, 40), zorder=2,  # 0-40 km/h covers typical regional range without making calm days look artificially extreme
         )
  
@@ -2883,13 +2883,13 @@ def build_tide_chart(tide_points):
         NOTION_LIGHT_GRID = "#EDECEC"
  
         plt.rcParams["font.family"] = "DejaVu Sans"
-        fig, ax = plt.subplots(figsize=(5.5, 3.2), dpi=150)
+        fig, ax = plt.subplots(figsize=(4.8, 3.0), dpi=150)
         fig.patch.set_alpha(0)
         ax.set_facecolor("none")
  
         ax.fill_between(hours, levels, min(levels), color=NOTION_BLUE, alpha=0.12, linewidth=0, zorder=1)
-        ax.plot(hours, levels, linewidth=2.5, color=NOTION_BLUE, zorder=2)
-        ax.plot([current_hour], [current_level], marker="o", markersize=8,
+        ax.plot(hours, levels, linewidth=3, color=NOTION_BLUE, zorder=2)
+        ax.plot([current_hour], [current_level], marker="o", markersize=10,
                  color=NOTION_RED, markeredgecolor="white", markeredgewidth=1.5, zorder=3)
  
         for spine in ["top", "right", "left"]:
@@ -2914,13 +2914,13 @@ def build_tide_chart(tide_points):
         tick_hours = [(t - t0).total_seconds() / 3600 for t in tick_times]
         tick_labels = [t.astimezone(INUVIK_TZ).strftime("%b %d") for t in tick_times]
         ax.set_xticks(tick_hours)
-        ax.set_xticklabels(tick_labels, fontsize=9, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
-        ax.tick_params(axis="y", labelsize=9, colors=NOTION_TEXT_GRAY, length=0)
+        ax.set_xticklabels(tick_labels, fontsize=15, color=NOTION_TEXT_GRAY, rotation=45, ha="right")
+        ax.tick_params(axis="y", labelsize=15, colors=NOTION_TEXT_GRAY, length=0)
         ax.tick_params(axis="x", length=0)
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
         ax.xaxis.grid(False)
         ax.set_axisbelow(True)
-        ax.set_ylabel("Water level (m)", fontsize=10, color=NOTION_TEXT_GRAY)
+        ax.set_ylabel("Water level (m)", fontsize=16, color=NOTION_TEXT_GRAY)
  
         # Label the current-time marker directly in red, so "now" is
         # unambiguous rather than relying on the reader to infer it from
@@ -2933,7 +2933,7 @@ def build_tide_chart(tide_points):
         ax.annotate(
             "now", xy=(current_hour, current_level),
             xytext=(current_hour + x_offset, current_level),
-            color=NOTION_RED, fontsize=10, fontweight="bold",
+            color=NOTION_RED, fontsize=16, fontweight="bold",
             ha="left", va="center",
         )
  
@@ -3346,7 +3346,6 @@ blocks = [
 # comes first, before any imagery — each card shows only the current
 # value, no charts. The fuller 30-day/multi-day charts for wind and tide
 # remain further down the page in their own detailed sections, unchanged.
-_todays_conditions_insertion_index = len(blocks)
 blocks.append(heading("📍 Today's Conditions"))
  
 weather_card = [
@@ -3421,6 +3420,28 @@ if active_alerts:
     blocks.append(divider())
  
 blocks.append(divider())
+ 
+# --- Weather Forecast and Marine Forecast — moved here, right after
+# Today's Conditions, before the satellite imagery. ---
+blocks.append(heading("📅 Weather Forecast — next 5 days", level=3))
+blocks.append(callout(
+    "5-day outlook:",
+    emoji="📅",
+    color="purple_background",
+    children=[large_forecast_strip_block] if large_forecast_strip_block else None,
+))
+blocks.append(gray_caption(land_forecast_caption))
+ 
+blocks.append(divider())
+ 
+blocks.append(heading("⚓ Marine Forecast — Yukon Coast", level=3))
+blocks.append(callout(marine_text, emoji="⚓", color="purple_background"))
+blocks.append(gray_caption(marine_source_text))
+blocks.append(link_paragraph("Explore here →", "https://weather.gc.ca/marine/forecast_e.html?mapID=07&siteID=16000"))
+ 
+blocks.append(divider())
+ 
+_water_level_insertion_index = len(blocks)
  
 # --- MODIS section's blocks.append() calls happen later, right after the
 # parallel executor block produces modis_block/modis_date/modis_caption
@@ -3876,27 +3897,13 @@ blocks.append(gray_caption(sentinel1_caption))
 blocks.append(link_paragraph("Explore here →", sentinel1_url))
 blocks.append(divider())
  
-# --- Row 2: weather forecast table (full width) then marine forecast ---
-blocks.append(heading("📅 Weather Forecast — next 5 days", level=3))
-blocks.append(callout(
-    "5-day outlook:",
-    emoji="📅",
-    color="purple_background",
-    children=[large_forecast_strip_block] if large_forecast_strip_block else None,
-))
-blocks.append(gray_caption(land_forecast_caption))
+# --- Weather Forecast and Marine Forecast relocated to appear right
+# after "Today's Conditions" and before the satellite imagery — see
+# above, inserted right after the Today's Conditions card grid.
  
-blocks.append(divider())
- 
-blocks.append(heading("⚓ Marine Forecast — Yukon Coast", level=3))
-blocks.append(callout(marine_text, emoji="⚓", color="purple_background"))
-blocks.append(gray_caption(marine_source_text))
- 
-blocks.append(divider())
- 
-# --- Total Water Level moved to appear above "Today's Conditions" —
-# see _total_water_level_blocks built later (once the data is ready) and
-# spliced into `blocks` near the top, right before the card grid. ---
+# --- Total Water Level moved to appear after Marine Forecast and before
+# the satellite imagery — see _total_water_level_blocks built later (once
+# the data is ready) and spliced into `blocks` at _water_level_insertion_index. ---
  
 # =========================================================
 # HISTORICAL / TREND SECTIONS (past data, distinct from the forecast
@@ -3956,7 +3963,7 @@ for b in existing["results"]:
 # sub-list at a saved index doesn't care that the section's underlying
 # data was only fetched much later in the script's actual execution
 # order than where it now visually appears.
-blocks = blocks[:_todays_conditions_insertion_index] + _total_water_level_blocks + blocks[_todays_conditions_insertion_index:]
+blocks = blocks[:_water_level_insertion_index] + _total_water_level_blocks + blocks[_water_level_insertion_index:]
  
 # =========================================================
 # UPDATE PAGE
@@ -3984,4 +3991,3 @@ else:
 #   netCDF4
 #   notion-client
 #   requests
- 
