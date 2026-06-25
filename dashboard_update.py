@@ -2254,13 +2254,13 @@ MODIS_FETCH_SIZE_PX = int(MODIS_FINAL_SIZE_PX * MODIS_OVERSIZE_FACTOR)
 # between Herschel Island's local meridian and the EPSG:3413 central
 # meridian (-45°), found geometrically as the direction from Herschel
 # Island's projected position toward the pole (the projection's origin).
-MODIS_ROTATION_DEG = 86.09
+MODIS_ROTATION_DEG = 92.0  # PROVISIONAL for Shingle Point — verify visually after first run, adjust if satellite image looks rotated
  
 # Polar stereographic bbox (EPSG:3413, meters), centered on Herschel Island,
 # sized to the oversized fetch dimensions above (so after rotation and
 # crop, the final 1024x1024 frame is fully covered by real imagery, with
 # no blank corners introduced by the rotation).
-_HERSCHEL_X, _HERSCHEL_Y = -2230848, 152544  # verified against pyproj earlier
+_HERSCHEL_X, _HERSCHEL_Y = -2305418, 88565  # Shingle Point center, verified against pyproj
 _half_width_m = 150_000 * MODIS_OVERSIZE_FACTOR
 BBOX_3413 = (
     f"{_HERSCHEL_X - _half_width_m:.0f},{_HERSCHEL_Y - _half_width_m:.0f},"
