@@ -33,6 +33,7 @@ notion = Client(auth=NOTION_TOKEN)
 # script's exposure to Open-Meteo's demonstrated intermittent timeouts.
 # =========================================================
 CACHE_FILE_PATH = "cache/daily_temps_cache.json"
+YEARLY_MEAN_CACHE_PATH = "cache/water_level_yearly_mean.json"
  
  
 def load_temp_cache():
@@ -53,6 +54,43 @@ def save_temp_cache(cache):
             json.dump(cache, f, indent=2, sort_keys=True)
     except Exception as e:
         print(f"CACHE: failed to save {CACHE_FILE_PATH}: {e}")
+ 
+ 
+def load_cached_yearly_mean(max_age_hours=24 * 365):
+    """
+    Loads the cached water level yearly mean if it exists and isn't
+    stale (older than max_age_hours, default ~1 year). Computing this
+    value live was confirmed (via real test runs) to sometimes exceed
+    30+ seconds against the remote THREDDS server — a genuinely
+    expensive query, not a coding inefficiency — but the underlying
+    value is a slow-moving 365-day average that doesn't meaningfully
+    change run to run, so recomputing it more than about once a year is
+    unnecessary. Returns the cached mean (float), or None if missing/stale.
+    """
+    try:
+        with open(YEARLY_MEAN_CACHE_PATH, "r") as f:
+            cached = json.load(f)
+        cached_time = datetime.fromisoformat(cached["computed_at"])
+        age_hours = (datetime.utcnow() - cached_time).total_seconds() / 3600
+        if age_hours <= max_age_hours:
+            print(f"YEARLY MEAN CACHE: using cached value {cached['mean']:.3f}m, computed {age_hours:.1f}h ago")
+            return cached["mean"]
+        print(f"YEARLY MEAN CACHE: cached value is {age_hours:.1f}h old (max {max_age_hours}h), will recompute")
+        return None
+    except Exception as e:
+        print(f"YEARLY MEAN CACHE: could not load ({e}), will compute fresh")
+        return None
+ 
+ 
+def save_cached_yearly_mean(mean_value):
+    """Saves the computed yearly mean to disk, along with a timestamp."""
+    try:
+        os.makedirs(os.path.dirname(YEARLY_MEAN_CACHE_PATH), exist_ok=True)
+        with open(YEARLY_MEAN_CACHE_PATH, "w") as f:
+            json.dump({"mean": mean_value, "computed_at": datetime.utcnow().isoformat()}, f)
+        print(f"YEARLY MEAN CACHE: saved new value {mean_value:.3f}m")
+    except Exception as e:
+        print(f"YEARLY MEAN CACHE: failed to save: {e}")
  
  
 _temp_cache = load_temp_cache()
@@ -223,15 +261,25 @@ def gray_caption(text):
     }
  
  
-def link_paragraph(label, url, prefix=None):
+def link_paragraph(label, url, prefix=None, prefix_gray=False):
     """
     Paragraph block containing a clickable link, optionally preceded by
     plain (non-linked) text on the same line — e.g. a caption followed by
     an "Explore here" link, without a line break between them.
+ 
+    prefix_gray: if True, renders the prefix text in gray (matching
+    gray_caption's de-emphasized styling), so a source line and its
+    "Explore here" link can share one line/block instead of being two
+    separate paragraph blocks, which always render on separate lines
+    regardless of content — that's inherent to Notion's block structure,
+    not something a styling change alone could fix.
     """
     rich_text = []
     if prefix:
-        rich_text.append({"type": "text", "text": {"content": prefix}})
+        prefix_segment = {"type": "text", "text": {"content": prefix}}
+        if prefix_gray:
+            prefix_segment["annotations"] = {"color": "gray"}
+        rich_text.append(prefix_segment)
     rich_text.append({"type": "text", "text": {"content": label, "link": {"url": url}}})
     return {
         "object": "block",
@@ -3132,45 +3180,49 @@ def fetch_copernicus_water_level():
         # remote operation than the already-narrowed `nearby` slice this
         # function uses elsewhere, and very likely the actual cause of
         # this feature making runs hang far longer than before it existed.
-        yearly_mean = None
-        try:
-            import threading as _threading
+        yearly_mean = load_cached_yearly_mean(max_age_hours=24 * 365)  # recompute at most once per year, per explicit request
+        if yearly_mean is None:
+            try:
+                import threading as _threading
  
-            _result_holder = {}
+                _result_holder = {}
  
-            def _compute_yearly_mean():
-                try:
-                    year_start = now - timedelta(days=365)
-                    year_slice_ds = ds["zos"].sel(time=slice(year_start, now))
-                    year_point = year_slice_ds.sel(x=best_point[0], y=best_point[1])
-                    year_values = year_point.values.flatten()
-                    year_values_clean = year_values[~np.isnan(year_values)]
-                    if len(year_values_clean) > 0:
-                        _result_holder["mean"] = float(np.mean(year_values_clean))
-                        _result_holder["count"] = len(year_values_clean)
-                except Exception as inner_e:
-                    _result_holder["error"] = inner_e
+                def _compute_yearly_mean():
+                    try:
+                        year_start = now - timedelta(days=365)
+                        year_slice_ds = ds["zos"].sel(time=slice(year_start, now))
+                        year_point = year_slice_ds.sel(x=best_point[0], y=best_point[1])
+                        year_values = year_point.values.flatten()
+                        year_values_clean = year_values[~np.isnan(year_values)]
+                        if len(year_values_clean) > 0:
+                            _result_holder["mean"] = float(np.mean(year_values_clean))
+                            _result_holder["count"] = len(year_values_clean)
+                    except Exception as inner_e:
+                        _result_holder["error"] = inner_e
  
-            # Hard timeout: this computation has caused real, multi-minute
-            # hangs in past runs (likely a remote-server query cost issue
-            # that's hard to verify without live access) — a 30s cap means
-            # this optional feature can never again block the rest of the
-            # dashboard from updating, even in the worst case.
-            _t = _threading.Thread(target=_compute_yearly_mean, daemon=True)
-            _t.start()
-            _t.join(timeout=30)
+                # Hard timeout: this computation has caused real,
+                # multi-minute hangs in past runs, and a live test
+                # confirmed it can genuinely exceed 30s against the
+                # remote server — not a coding bug, a genuinely expensive
+                # query. The cache above means this slow path should now
+                # be hit at most once per year, with every other run
+                # served from the fast cached value instead.
+                _t = _threading.Thread(target=_compute_yearly_mean, daemon=True)
+                _t.start()
+                _t.join(timeout=30)
  
-            if _t.is_alive():
-                print("COPERNICUS WATER LEVEL: yearly mean calculation timed out after 30s, skipping")
-            elif "error" in _result_holder:
-                print("COPERNICUS WATER LEVEL: yearly mean calculation failed:", _result_holder["error"])
-            elif "mean" in _result_holder:
-                yearly_mean = _result_holder["mean"]
-                print(f"COPERNICUS WATER LEVEL: yearly mean computed from {_result_holder['count']} valid points: {yearly_mean:.3f}m")
-            else:
-                print("COPERNICUS WATER LEVEL: no valid data in past-year window for mean calculation")
-        except Exception as e:
-            print("COPERNICUS WATER LEVEL: yearly mean calculation setup failed:", e)
+                if _t.is_alive():
+                    print("COPERNICUS WATER LEVEL: yearly mean calculation timed out after 30s, skipping (will retry next run)")
+                elif "error" in _result_holder:
+                    print("COPERNICUS WATER LEVEL: yearly mean calculation failed:", _result_holder["error"])
+                elif "mean" in _result_holder:
+                    yearly_mean = _result_holder["mean"]
+                    print(f"COPERNICUS WATER LEVEL: yearly mean computed from {_result_holder['count']} valid points: {yearly_mean:.3f}m")
+                    save_cached_yearly_mean(yearly_mean)
+                else:
+                    print("COPERNICUS WATER LEVEL: no valid data in past-year window for mean calculation")
+            except Exception as e:
+                print("COPERNICUS WATER LEVEL: yearly mean calculation setup failed:", e)
  
         return times_clean, values_clean, yearly_mean
  
@@ -3194,23 +3246,35 @@ def build_water_level_chart(times, values, yearly_mean=None):
         NOTION_TEXT_GRAY = "#787774"
         NOTION_LIGHT_GRID = "#EDECEC"
  
+        # When the yearly mean is available, plot relative to it (meters
+        # above/below the past-year average) rather than absolute meters
+        # — the comparison to "typical" is the actually useful number,
+        # and a y-axis genuinely labeled this way communicates it more
+        # clearly than an absolute-meter axis plus a separately-labeled
+        # dashed reference line competing for space with the curve.
+        if yearly_mean is not None:
+            plot_values = [v - yearly_mean for v in values]
+            ylabel = "Water level vs. yearly average (m)"
+        else:
+            plot_values = values
+            ylabel = "Total water level (m)"
+ 
         plt.rcParams["font.family"] = "DejaVu Sans"
         fig, ax = plt.subplots(figsize=(5.5, 3.2), dpi=150)
         fig.patch.set_alpha(0)
         ax.set_facecolor("none")
  
-        ax.fill_between(hours, values, min(values), color=NOTION_PURPLE, alpha=0.12, linewidth=0, zorder=1)
-        ax.plot(hours, values, linewidth=2.5, color=NOTION_PURPLE, zorder=2)
-        ax.plot([hours[0]], [values[0]], marker="o", markersize=8,
+        ax.fill_between(hours, plot_values, min(plot_values), color=NOTION_PURPLE, alpha=0.12, linewidth=0, zorder=1)
+        ax.plot(hours, plot_values, linewidth=2.5, color=NOTION_PURPLE, zorder=2)
+        ax.plot([hours[0]], [plot_values[0]], marker="o", markersize=8,
                  color=NOTION_RED, markeredgecolor="white", markeredgewidth=1.5, zorder=3)
  
-        # Yearly mean reference line — a real long-term average computed
-        # from the past 365 days of actual data at this same grid cell
-        # (not the 10-day forecast window itself), so the forecast curve
-        # can be visually compared against typical conditions.
+        # Reference line at zero (= the yearly average itself) when
+        # plotting relative values, so "typical" is a clean, simple
+        # horizontal line rather than needing its own value label.
         if yearly_mean is not None:
-            ax.axhline(yearly_mean, color=NOTION_GRAY_LINE, linewidth=1.5, linestyle="--", zorder=1.5)
-            ax.text(max(hours) * 0.99, yearly_mean, f" {yearly_mean:.2f}m avg (past year)",
+            ax.axhline(0, color=NOTION_GRAY_LINE, linewidth=1.5, linestyle="--", zorder=1.5)
+            ax.text(max(hours) * 0.99, 0, f" yearly avg ({yearly_mean:.2f}m)",
                     color=NOTION_GRAY_LINE, fontsize=8, va="bottom", ha="right")
  
         for spine in ["top", "right", "left"]:
@@ -3227,7 +3291,7 @@ def build_water_level_chart(times, values, yearly_mean=None):
         ax.yaxis.grid(True, color=NOTION_LIGHT_GRID, linewidth=1, zorder=0)
         ax.xaxis.grid(False)
         ax.set_axisbelow(True)
-        ax.set_ylabel("Total water level (m)", fontsize=10, color=NOTION_TEXT_GRAY)
+        ax.set_ylabel(ylabel, fontsize=10, color=NOTION_TEXT_GRAY)
  
         fig.tight_layout()
         png_bytes = fig_to_png_bytes(fig)
@@ -3391,8 +3455,11 @@ weather_card = [
         color="blue_background",
         children=[b for b in [weather_icon_block, mini_forecast_strip_block] if b] or None,
     ),
-    gray_caption(weather_source_text),
-    link_paragraph("Full weather data →", f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}&current=temperature_2m,relative_humidity_2m,pressure_msl&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto"),
+    link_paragraph(
+        "Full weather data →",
+        f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}&current=temperature_2m,relative_humidity_2m,pressure_msl&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto",
+        prefix=f"{weather_source_text}  ", prefix_gray=True,
+    ),
 ]
  
 wind_card = [
@@ -3403,8 +3470,11 @@ wind_card = [
         color="blue_background",
         children=[b for b in [wind_icon_block, wind_forecast_chart_block] if b] or None,
     ),
-    gray_caption(wind_source_text),
-    link_paragraph("Full wind data →", f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}&hourly=windspeed_10m,winddirection_10m&timezone=auto"),
+    link_paragraph(
+        "Full wind data →",
+        f"https://api.open-meteo.com/v1/forecast?latitude={LAT}&longitude={LON}&hourly=windspeed_10m,winddirection_10m&timezone=auto",
+        prefix=f"{wind_source_text}  ", prefix_gray=True,
+    ),
 ]
  
 tide_card = [
@@ -3415,8 +3485,12 @@ tide_card = [
         color="blue_background",
         children=[tide_chart_block] if tide_chart_block else None,
     ),
-    gray_caption(tide_chart_caption if tide_chart_bytes else "Tide chart could not be generated — see Action logs."),
-    link_paragraph("Full station data →", f"https://www.tides.gc.ca/en/stations/{HERSCHEL_STATION_CODE}"),
+    link_paragraph(
+        "Full station data →",
+        f"https://www.tides.gc.ca/en/stations/{HERSCHEL_STATION_CODE}",
+        prefix=f"{tide_chart_caption if tide_chart_bytes else 'Tide chart could not be generated — see Action logs.'}  ",
+        prefix_gray=True,
+    ),
 ]
  
 sun_card = [
@@ -3427,8 +3501,12 @@ sun_card = [
         color="blue_background",
         children=[sun_chart_block] if sun_chart_block else None,
     ),
-    gray_caption(sun_chart_caption if sun_chart_bytes else "Sun position chart could not be generated — see Action logs."),
-    link_paragraph("Full sun data →", f"https://api.sunrise-sunset.org/json?lat={LAT}&lng={LON}&formatted=0"),
+    link_paragraph(
+        "Full sun data →",
+        f"https://api.sunrise-sunset.org/json?lat={LAT}&lng={LON}&formatted=0",
+        prefix=f"{sun_chart_caption if sun_chart_bytes else 'Sun position chart could not be generated — see Action logs.'}  ",
+        prefix_gray=True,
+    ),
 ]
  
 blocks.append(columns(weather_card, wind_card))
@@ -3471,8 +3549,10 @@ blocks.append(divider())
  
 blocks.append(heading("⚓ Marine Forecast — Yukon Coast", level=3))
 blocks.append(callout(marine_text, emoji="⚓", color="purple_background"))
-blocks.append(gray_caption(marine_source_text))
-blocks.append(link_paragraph("Explore here →", "https://weather.gc.ca/marine/forecast_e.html?mapID=07&siteID=16000"))
+blocks.append(link_paragraph(
+    "Explore here →", "https://weather.gc.ca/marine/forecast_e.html?mapID=07&siteID=16000",
+    prefix=f"{marine_source_text}  ", prefix_gray=True,
+))
  
 blocks.append(divider())
  
@@ -3617,23 +3697,23 @@ def find_latest_sentinel1_date(token, lookback_days=10):
  
         def _point_covered_by_geometry(lon, lat, geometry, half_width_deg_lon, half_width_deg_lat, grid_n=5):
             """
-            Checks whether the geometry covers a real grid of points
-            spanning the ACTUAL displayed image extent (a grid_n x grid_n
-            grid across the full half_width in each direction from
-            center), not just a small margin around the bare center
-            point. Requires most of the grid (at least 70%) to be
-            covered, since a long narrow swath can still legitimately
-            clip a corner of the display frame without making the image
-            unusable — but the center region and most of the frame need
-            real data.
+            Checks coverage with two real, distinct requirements:
+            1. The exact center point (where the Herschel Island marker
+               and its label actually render) must be covered, with a
+               small real margin around it — this is the requirement
+               that actually matters for "is the dot on real data."
+            2. At least some reasonable minimum of the wider display
+               frame must also be covered (so the image isn't almost
+               entirely gray), but NOT a strict majority — a long narrow
+               Sentinel-1 swath can legitimately leave large parts of a
+               300km square frame uncovered while still giving a
+               perfectly usable image with the dot clearly on real data.
  
-            This fixes the actual root cause of the earlier bug: the
-            previous version only checked a small 30km bubble around the
-            center, while the real displayed image is 150km half-width
-            (300km square) — a scene could pass that small check while
-            still leaving large parts of the actual visible frame
-            (potentially including where the marker dot and its label
-            render) in the gray, uncovered area.
+            The earlier version required 70% of the full grid covered,
+            which was too strict and rejected scenes that would have
+            looked fine — the dot on real data, just with some genuine
+            gray area elsewhere in the frame (which is honest, correct
+            behavior to show, not a reason to reject the whole scene).
             """
             if not geometry:
                 return False
@@ -3646,6 +3726,24 @@ def find_latest_sentinel1_date(token, lookback_days=10):
             else:
                 return False
  
+            # Requirement 1: center point + a small real margin (~15% of
+            # the half-width, i.e. ~22km at our 150km half-width) must be
+            # covered, so the marker dot and its label render on real data.
+            center_margin_frac = 0.15
+            center_test_points = [
+                (lon, lat),
+                (lon - half_width_deg_lon * center_margin_frac, lat),
+                (lon + half_width_deg_lon * center_margin_frac, lat),
+                (lon, lat - half_width_deg_lat * center_margin_frac),
+                (lon, lat + half_width_deg_lat * center_margin_frac),
+            ]
+            for tlon, tlat in center_test_points:
+                if not any(_point_in_ring(tlon, tlat, ring) for ring in rings):
+                    return False
+ 
+            # Requirement 2: a low minimum fraction of the wider frame
+            # also needs real data, just to avoid an almost-entirely-gray
+            # image — not a strict majority.
             offsets = [-1.0, -0.5, 0.0, 0.5, 1.0][:grid_n] if grid_n == 5 else \
                 [i / (grid_n - 1) * 2 - 1 for i in range(grid_n)]
  
@@ -3658,7 +3756,7 @@ def find_latest_sentinel1_date(token, lookback_days=10):
                 1 for tlon, tlat in test_points
                 if any(_point_in_ring(tlon, tlat, ring) for ring in rings)
             )
-            return covered_count / len(test_points) >= 0.70
+            return covered_count / len(test_points) >= 0.20
  
         covering_features = []
         for f in features:
@@ -3667,14 +3765,17 @@ def find_latest_sentinel1_date(token, lookback_days=10):
                 covering_features.append(f)
                 continue
             # Fallback: bbox-coverage approximation, only used if geometry
-            # is missing from this particular feature's response. Same
-            # real display half-width requirement as the geometry check.
+            # is missing from this particular feature's response. Uses
+            # the same smaller center-margin requirement as the geometry
+            # check above, not the full display half-width.
             if not geometry:
                 fbbox = f.get("bbox")
                 if fbbox and len(fbbox) >= 4:
                     fminx, fminy, fmaxx, fmaxy = fbbox[0], fbbox[1], fbbox[2], fbbox[3]
-                    if (fminx + half_width_deg_lon <= LON <= fmaxx - half_width_deg_lon and
-                            fminy + half_width_deg_lat <= LAT <= fmaxy - half_width_deg_lat):
+                    bbox_margin_lon = half_width_deg_lon * 0.15
+                    bbox_margin_lat = half_width_deg_lat * 0.15
+                    if (fminx + bbox_margin_lon <= LON <= fmaxx - bbox_margin_lon and
+                            fminy + bbox_margin_lat <= LAT <= fmaxy - bbox_margin_lat):
                         covering_features.append(f)
  
         if not covering_features:
@@ -4026,3 +4127,4 @@ else:
 #   netCDF4
 #   notion-client
 #   requests
+ 
